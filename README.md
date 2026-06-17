@@ -4,6 +4,9 @@
 Merged from the old `NAV_PLAN.md` + `AUTONOMY_PLAN.md` (both deleted) + running status.
 Last updated: **2026-06-17**.
 
+> **Public shareable mirror:** https://github.com/alexbhandari/pidog-public
+> After editing this file, run `./sync_public_status.sh` to update the public copy.
+
 ---
 
 ## Goal
