@@ -106,8 +106,6 @@ honest note on what's already working vs. not.
 
 ## Watch it (videos — dog's-eye camera view)
 - **Finding home** (works):
-  https://github.com/alexbhandari/pidog/blob/master/recordings/2026-06-16_find_home_onboard.mp4
+  https://github.com/alexbhandari/pidog-public/blob/main/recordings/2026-06-16_find_home_onboard.mp4
 - **Leaving and returning** (worked but cut short by the battery issue):
-  https://github.com/alexbhandari/pidog/blob/master/recordings/2026-06-16_leave_and_return_onboard.mp4
-
-*(Videos live in the main project repo; the links work if that repo is public.)*
+  https://github.com/alexbhandari/pidog-public/blob/main/recordings/2026-06-16_leave_and_return_onboard.mp4
