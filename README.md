@@ -30,24 +30,36 @@ sensor or a photo actually proves it.
 - **Record everything.** Every run is saved as a video from the dog's-eye view plus a log of
   what it was sensing, and posted online so we can review what happened.
 
-## What's still hard (the honest part)
-- **No sense of direction.** With no compass, it's easy for the dog to lose track of which way
-  it's facing — so it has to keep re-finding landmarks rather than remembering "home is that way."
-- **The camera is on the floor.** It mostly sees furniture legs and clutter, not a nice overview,
-  which makes some things hard to recognize.
-- **Turning is a battery hog.** Spinning in place pulls so much power that the battery voltage
-  briefly sags, the legs lose strength, and the turn comes up short. So the trickier, turn-heavy
-  moves only work well on a nearly full charge.
-- **Turns also slide it sideways a little**, so its exact position drifts over a long sequence of
-  moves — even though it can still re-aim at a landmark.
+## The plan
+The whole approach copies how a real dog gets around with no compass and no map handed to it:
+**navigate by what you can see right now, and remember places by the landmarks around them.**
+Every move is "look → find a landmark → take a step → look again," so the dog never relies on
+remembering which way it's facing (the thing that always goes wrong). We build that up in stages:
 
-## What's next
-1. Charge it full and have it do a clean **leave-home-and-come-back** trip, recorded.
-2. Make turning gentler on the battery so it works at lower charge.
-3. Teach it to **find a person** (e.g., walk over to Alex) and to **patrol** the room without
-   getting stuck.
-4. A tiny **$3 compass chip** would fix the "which way am I facing" problem and is the single
-   biggest easy upgrade.
+1. **Rock-solid "look-step-look" loop** *(in progress).* Make the basic cycle reliable: spot a
+   landmark, aim at it, step, re-check — recovering on its own when it gets stuck or wedged. A
+   clean leave-home-and-return trip is the immediate milestone.
+2. **Go to any landmark on command.** "Go to the couch / the doorway / the bookshelf" — it
+   recognizes the thing and walks to it, re-aiming the whole way. (Walking to one target already
+   works; this generalizes it to anything it can recognize.)
+3. **Build a landmark map of the room.** The dog remembers what's near what ("the laptop is across
+   from the bookshelf"), so it can figure out roughly where it is and plan a route between places.
+   **This map is its replacement for a sense of direction** — visual memory instead of a compass.
+4. **Round trips & patrol.** Leave home, visit several spots in order, and reliably come back —
+   using that map to stay oriented over a long route.
+5. **Find a person / follow.** Recognize Alex and walk over to him; later, follow.
+6. **Notice what changed.** Compare the room to its remembered map and report what moved.
+
+### How the plan handles the hard parts (not excuses — design choices)
+- **No compass:** never trust remembered direction — re-find a landmark every step, and lean on
+  the room map (steps 1 & 3). This is the core of the whole design.
+- **Turning drains the battery** (spinning briefly saps power and weakens the legs): **turn less
+  and turn gently** — small, slow corrections instead of big spins, and use the map so it rarely
+  needs to spin in place. Fixing the power problem in *software*, so it works at any charge.
+- **Drift (turns slide it sideways):** harmless because it constantly re-aims at landmarks, so
+  error never piles up.
+- **Floor-level camera:** play to its strength — recognizing furniture and landmarks at its eye
+  level — rather than fighting for an overhead view it'll never have.
 
 ## Watch it (videos — dog's-eye camera view)
 - **Finding home** (works):
