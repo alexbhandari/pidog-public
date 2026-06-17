@@ -30,36 +30,79 @@ sensor or a photo actually proves it.
 - **Record everything.** Every run is saved as a video from the dog's-eye view plus a log of
   what it was sensing, and posted online so we can review what happened.
 
-## The plan
+## The plan — what each step means, how it actually works, and where it's hard
 The whole approach copies how a real dog gets around with no compass and no map handed to it:
 **navigate by what you can see right now, and remember places by the landmarks around them.**
-Every move is "look → find a landmark → take a step → look again," so the dog never relies on
-remembering which way it's facing (the thing that always goes wrong). We build that up in stages:
+Below, for each stage: *how it works*, *the real challenge*, and *how we get past it* — and an
+honest note on what's already working vs. not.
 
-1. **Rock-solid "look-step-look" loop** *(in progress).* Make the basic cycle reliable: spot a
-   landmark, aim at it, step, re-check — recovering on its own when it gets stuck or wedged. A
-   clean leave-home-and-return trip is the immediate milestone.
-2. **Go to any landmark on command.** "Go to the couch / the doorway / the bookshelf" — it
-   recognizes the thing and walks to it, re-aiming the whole way. (Walking to one target already
-   works; this generalizes it to anything it can recognize.)
-3. **Build a landmark map of the room.** The dog remembers what's near what ("the laptop is across
-   from the bookshelf"), so it can figure out roughly where it is and plan a route between places.
-   **This map is its replacement for a sense of direction** — visual memory instead of a compass.
-4. **Round trips & patrol.** Leave home, visit several spots in order, and reliably come back —
-   using that map to stay oriented over a long route.
-5. **Find a person / follow.** Recognize Alex and walk over to him; later, follow.
-6. **Notice what changed.** Compare the room to its remembered map and report what moved.
+### 1. Reliable "look → step → look" loop  *(building now)*
+- **How it works:** about once a second the dog grabs a camera frame and runs an object detector
+  that names what it sees and *where* (far-left … center … far-right). It picks its target and
+  either nudges to aim — turning a small amount, *measured by how far the image slides* — or takes
+  a step forward, using its distance sensor to know when it's close. If a step doesn't change the
+  view, it knows it's wedged: it stops, looks for an opening, and goes around.
+- **The challenge:** the detector flickers on small/distant things, and turns come up short when
+  the battery sags.
+- **How we get there:** average the detector over 3 frames (ignore one-off blips); small, slow,
+  camera-measured turns that retry if they didn't actually move it; median-filter the noisy
+  distance sensor. **Milestone:** one clean leave-home-and-return on a full charge.
+- **Status:** walking-to-a-target, stuck/fall detection, camera-measured turns, and find-home all
+  work individually; stitching them into one reliable round-trip is the current work.
 
-### How the plan handles the hard parts (not excuses — design choices)
-- **No compass:** never trust remembered direction — re-find a landmark every step, and lean on
-  the room map (steps 1 & 3). This is the core of the whole design.
-- **Turning drains the battery** (spinning briefly saps power and weakens the legs): **turn less
-  and turn gently** — small, slow corrections instead of big spins, and use the map so it rarely
-  needs to spin in place. Fixing the power problem in *software*, so it works at any charge.
-- **Drift (turns slide it sideways):** harmless because it constantly re-aims at landmarks, so
-  error never piles up.
-- **Floor-level camera:** play to its strength — recognizing furniture and landmarks at its eye
-  level — rather than fighting for an overhead view it'll never have.
+### 2. Go to any landmark it can recognize
+- **Can it now?** Partly. It already recognizes ~80 everyday things (couch, bed, chair, TV,
+  laptop, bookshelf, person…) and can walk to one. The missing piece is *finding* a named one
+  that isn't already dead ahead.
+- **How it'll work:** on "go to the couch," it first **searches** — pans its head, then turns in
+  small steps, running the detector each time — until the couch comes into view, then runs the
+  Step-1 loop to it.
+- **The challenge:** the detector only knows generic categories, not "the *blue* armchair," and
+  the target may be somewhere it can't see from where it's standing.
+- **How we get there:** for look-alikes, add color/size cues or have the AI brain confirm "yes,
+  that's the one" from a photo; for out-of-sight targets, use the map (Step 3).
+
+### 3. Build a landmark map of the room  *(the key piece — least built)*
+- **How it works:** while moving, the dog logs which landmarks it sees from each spot and their
+  directions, building a simple **place-graph** — *from the bookshelf, the couch is ~left; from
+  the couch, the doorway is ahead.* Underneath sits the visual map it already builds from its
+  camera, which lets it recognize "I've been right here before."
+- **Why it matters:** this graph is its **compass substitute** — it stays oriented by recognizing
+  places, not by remembering angles.
+- **The challenge (honest):** the camera map loses its place during turns (motion blur), and has
+  no built-in real-world scale. The place-graph layer isn't built yet, and "recognize where I am"
+  works only intermittently today.
+- **How we get there:** turn in small paused steps so the map keeps tracking; re-anchor by
+  recognizing a landmark right after each turn; measure distance in steps (~8 cm each) plus the
+  distance sensor; keep the map as "places linked by landmark sightings," which tolerates the
+  tracking gaps instead of needing perfect coordinates.
+
+### 4. Round trips & patrol
+- **How it works:** a route is a list of landmark waypoints; at each one the dog finds the *next*
+  landmark and goes to it (Step 2), re-recognizing the place at every waypoint to cancel out
+  drift, and returns by reversing the route or re-finding home.
+- **The challenge:** small errors pile up over a long route. **How:** the re-recognition at each
+  waypoint resets the error each time.
+
+### 5. Find / follow Alex
+- **How it works:** scan for a person, then approach in short, re-aimed steps; the AI brain
+  confirms it's *you* (not a stranger) from a frame.
+- **The challenge:** you move, and the remote loop is slow (~10 s). **How:** keep each step short
+  and re-detect every step so it tracks you instead of charging a stale position.
+
+### 6. Notice what changed
+- **How it works:** compare today's landmark map against the remembered one and flag what moved,
+  appeared, or vanished — the original "patrol and report changes" goal.
+
+### Constraints we design around (not excuses — these shape every step)
+- **Turning is power-hungry** (a spin briefly saps the battery and weakens the legs) → **fewer,
+  gentler turns**, and lean on the map so it rarely has to spin in place. A software fix, so it
+  works at any charge — not a hardware crutch.
+- **The remote control loop is slow (~10 s round trip)** → the fast reflexes (aiming, stuck/fall,
+  turn-measuring) already run *on the dog itself*, so they don't wait on WiFi.
+- **Floor-level camera** → play to what it's good at (recognizing furniture/landmarks at its eye
+  level) instead of chasing an overhead view it'll never have.
+- **Honesty** → it only claims "arrived" / "found you" when a sensor or photo proves it.
 
 ## Watch it (videos — dog's-eye camera view)
 - **Finding home** (works):
