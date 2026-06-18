@@ -68,10 +68,9 @@ These are the robust pieces pushed onto the Pi so they run network-free: `verifi
 (head-scan + turn), the obstacle and fall reflexes, and emergency-stop abort.
 
 ### SLAM pipeline (separate, only when mapping)
-ORB-SLAM3 (built from source on the Pi). A grabber pulls `/frame.jpg` into a folder; a
-`mono_stream` node runs visual SLAM and writes pose + map exports; a small static server on
-`:8081` serves them to the dashboard. The map is **persistent** (load → merge → save). Runs only
-when started; not part of the always-on server.
+ORB-SLAM3 (monocular), built from source at `~/ORB_SLAM3` on the Pi. Started/stopped on demand
+(not part of the always-on server). See **[SLAM pipeline — detailed](#slam-pipeline--detailed)**
+below for the file-by-file data flow, config, and persistence mechanism.
 
 ---
 
@@ -89,15 +88,11 @@ IPv6-timeout that used to cause lag). Shows the camera, sensors, and a SLAM map 
 **drive manually** (keyboard, snappy `verify:false` commands), records sessions, and has a
 **MANUAL / AUTONOMOUS toggle** so you always know which mode is active.
 
-### Navigation routines (authored on the Mac, **run on the Dog**)
-These Python scripts are version-controlled in this repo but are **deployed to the Pi (`scp`) and
-executed there** (invoked over SSH). Running on the Pi means their tight per-step loop curls
-`localhost:8080` with no Wi-Fi hop per step:
-- `nav_approach.py` — visual-servo approach to a landmark (+ `unstick` recovery).
-- `find_home.py` — sweep + detect + face the bookshelf (find the home *landmark/orientation*).
-- `record_home.py` — capture a **home-position fingerprint** (depth profile + landmark bearings).
-- `return_home.py` — face the landmark + match the home distance, report position match.
-- `home_return.py` / `navigate_return.py` — leave-and-return experiments.
+### Navigation routines
+See **[Navigation — exactly how it works](#navigation--exactly-how-it-works-on-the-dog)** below for
+the full detail. In short: each routine is a small Python script, version-controlled here but
+**`scp`-deployed to the Pi and executed there** (invoked over SSH), so its tight per-step loop
+curls `localhost:8080` with no Wi-Fi hop per step.
 
 ### `rec_run.py` — run recorder
 Wraps any run and saves the **onboard camera** (`/frame.jpg`) + **dog data** (`/sense`) ~1×/sec,
@@ -122,6 +117,117 @@ per-step control loop.
   `/scan` (depth), `/sense`.
 - **SLAM:** `dogbrain /frame.jpg` → grabber → ORB-SLAM3 → exports → `:8081` → cockpit map panel.
 - **Recording:** `rec_run.py` (Mac) samples `/frame.jpg` + `/sense` → `dog.mp4` + `data.jsonl`.
+
+## Navigation — exactly how it works on the dog
+Every navigation routine is a Python script that runs **on the Pi** and drives the body by calling
+`localhost:8080` in a loop. They all compose the **same handful of primitives** and the **same
+rule**: *look → decide → one small move → look again* (never blind-dead-reckon a path).
+
+### The shared building blocks
+- **Landmark bearing:** `GET /detect` → for each object, `cx` (−1 left … +1 right) and `area_frac`
+  (bigger = closer). Detections are **frame-smoothed** (require the object in ≥2 of 3 frames) to
+  kill YOLO flicker. A landmark's true bearing from the body = `head_yaw + cx·(half-FOV≈31°)`.
+- **Distance:** `GET /sense distance_cm` (ultrasonic), **median-filtered** over several reads,
+  rejecting `≤0` (no echo) and out-of-range spikes.
+- **Depth profile:** pan the head across yaws and read distance at each → a "silhouette" of the
+  surroundings (used to fingerprint a spot and to find the most-open direction).
+- **Moves:** `forward`/`backward` (verified — with stall/fall detection), `turn_vision deg`
+  (camera-measured turn that backs up if wedged), `face label` (head-scan to a landmark's bearing,
+  then turn the body to it).
+
+### The routines, file by file
+- **`nav_approach.py`** — visual-servo *approach* to a landmark. `quiet()` (autonomy off) first.
+  Loop: median distance + smoothed `/detect` of the target. If off-center (`|cx|>0.30`) → small
+  `turn_left/right`; else `forward` one step; stop when `distance < stop_cm`. If a move comes back
+  `moved:false` (stalled) → **`unstick()`**: head-scan the depth profile, pick the most-open yaw,
+  turn the body that way (try the other way if that turn also stalls = boxed), then drive forward —
+  *"can't go this way → turn and go where the camera can see."* Up to 3 tries, then gives up. Has
+  `--quiet-only`/`--unstick-only` modes; surfaced as `./dog approach` / `./dog unstick`.
+- **`find_home.py`** — locate **and face** the home landmark (the bookshelf = `book`). Up to 9
+  rounds: head-scan a few yaws running `/detect`; if the bookshelf appears, turn the body toward
+  the yaw it was seen at and `center_book` (servo until `cx≈0`); else `turn_vision(45°)` to the
+  next sector and repeat. Result = facing the bookshelf (this fixes **orientation only**). Exits on
+  fallen/stuck/aborted.
+- **`record_home.py`** — capture a **home-position fingerprint**. `face("book")` first (canonical
+  orientation), then head-scan `−60…+60°` recording at each yaw: the **ultrasonic distance** (→ a
+  depth profile) and any detected landmark's **bearing + area + confidence**. Saves
+  `home_signature.json = {fwd_dist_cm, heading_deg, depth_profile{yaw:dist}, landmarks{...}}`.
+- **`return_home.py`** — return to that recorded position. Loads the signature; `face("book")`
+  (orientation); then steps forward/back until the live distance matches the home
+  distance-to-bookshelf (±12 cm), re-facing every couple steps; finally re-scans the depth profile
+  and reports `profile_err` vs home. **Honest v1:** fixes orientation + distance; it *measures* but
+  does **not** fix the lateral offset (the dog can't strafe, and one wide landmark can't pin
+  left-right position).
+- **`home_return.py`** — leave-and-return, open-floor version. Center on `book` → record `D_home`;
+  `turn_vision(180°)` to face the open room; walk forward N steps; `turn_vision(180°)` back;
+  re-acquire the bookshelf; report distance error. Battery guard uses **voltage** (the `%` glitches).
+- **`navigate_return.py`** — older leave-and-return, toward-bookshelf version. Center → `D_home`;
+  OUT: visual-servo approach the bookshelf to ~85 cm; `turn_vision(180°)`; BACK: forward ~same #
+  steps; RE-FACE: turn until `book` centered; reports distance error + a SLAM x/z cross-check.
+
+### What works vs. what's hard (navigation)
+Working: approach-a-landmark, stall→unstick, measured turns with stuck-backup, find-and-face the
+landmark, record a fingerprint. **Hard/unsolved:** returning to an *exact position* — orientation
+and distance-to-one-landmark are reliable, but the **lateral axis** isn't (needs a 2nd landmark to
+triangulate, scan-matching, or live SLAM). And **there is no reliable position tracking**: odometry
+only counts forward/back steps (~8 cm each) and ignores the big sideways drift that turns cause, so
+the dead-reckoned position is wrong after any turning.
+
+## SLAM pipeline — detailed
+ORB-SLAM3 (monocular), built from source at `~/ORB_SLAM3`. Launched by `slam_live.sh`, stopped by
+`slam_stop.sh`. Three pieces, decoupled through the filesystem:
+
+1. **Grabber — `slam/live_grab_cont.py`** (on the Pi): every ~0.07 s pulls `localhost:8080/frame.jpg`
+   into `~/live/rgb/<epoch>.jpg`, pruning to the last ~40 frames. (Decouples camera I/O from SLAM.)
+2. **SLAM node — `slam/mono_stream.cc`** → built as `~/ORB_SLAM3/Examples/Monocular/mono_stream`.
+   Tail-follows `~/live/rgb`, feeds each new frame to `TrackMonocular`, and writes exports:
+   - `~/slam_latest.txt` — one status line: `state x y z yaw cloudsize matched feats frame`.
+   - `~/slam_feats.txt` — 2D keypoints (+ matched flag) for the camera overlay.
+   - `~/slam_cloud.txt` — accumulated 3D map points.
+   - `~/live_pose.txt` — appended pose log.
+3. **Static server (`python3 -m http.server 8081`)** serves those files; the **cockpit** polls
+   `:8081` and draws the top-down map + feature overlay.
+
+**Config — `slam/pidog_mono.yaml`:** pinhole `fx=fy=266` (ESTIMATED, not properly calibrated),
+320×240, 1000 ORB features. The last two lines, `System.LoadAtlasFromFile/SaveAtlasToFile:
+"pidog_room"`, enable **persistence**.
+
+**Persistence (load → merge → save):** on start it loads the saved atlas (`pidog_room.osa`); the new
+session **merges** into it via place-recognition when it re-sees mapped scenery; on `SIGTERM` (from
+`slam_stop.sh`) it saves the merged atlas back. This needed a **patch to ORB-SLAM3 itself**
+(`slam/System.cc.patched`): wait for the LocalMapping + LoopClosing threads to finish *before*
+`SaveAtlas`, otherwise the save raced the mapper and segfaulted.
+
+**Status:** monocular SLAM tracks, builds, and persists a map; it **loses tracking during turns**
+(rotation + motion blur) and **relocalizes only intermittently**. A mono-**inertial** (IMU-fused)
+variant exists — `slam/mono_stream_imu.cc`, `slam/pidog_imu.yaml`, `slam/live_grab_imu*.py`,
+`slam/slam_live_imu.sh`, fed by dogbrain's `/imu` stream — but its IMU init **NaN-crashes**, so it's
+not used. `slam/calibrate.py` is a checkerboard intrinsic-calibration helper (the `fx=266` is still
+just an estimate).
+
+## Complete file inventory
+**On the Dog (Pi):**
+- `dogbrain.py` — the always-on HTTP sensorimotor server (everything in the "On the DOG" section).
+- `dogbrain.service` — systemd unit that keeps `dogbrain.py` running / restarts it.
+- `~/ORB_SLAM3/...` (built from source, not in this repo) + the `slam/` files below, deployed to `~/`.
+
+**SLAM (`slam/`, mirrored here, deployed to the Pi):**
+- `mono_stream.cc` — monocular SLAM node (exports pose/map). `slam_live.sh` / `slam_stop.sh` —
+  start/stop. `live_grab_cont.py` — frame grabber. `pidog_mono.yaml` — camera/ORB/atlas config.
+  `System.cc.patched` — the atlas-save fix (mirror of the patched ORB-SLAM3 source).
+- IMU-fused (unused, NaN-crashes): `mono_stream_imu.cc`, `pidog_imu.yaml`, `live_grab_imu.py`,
+  `live_grab_imu_rec.py`, `slam_live_imu.sh`. `calibrate.py` — checkerboard intrinsics. `README.md`.
+
+**On the Mac:**
+- `dog` — CLI helper (Bash). `cockpit/cockpit.py` — dashboard server (:8088).
+- Nav routines (deployed to Pi, run there): `nav_approach.py`, `find_home.py`, `record_home.py`,
+  `return_home.py`, `home_return.py`, `navigate_return.py`. `home_signature.json` — saved home fingerprint.
+- `rec_run.py` — run recorder. `runs/` — recordings (gitignored). `recordings/` — published clips.
+- `sync_public_status.sh` — mirrors the docs to the public repo.
+
+**Docs:** `ARCHITECTURE.md` (this), `OVERVIEW.md` (plain-language), `STATUS.md` (living plan),
+`CLAUDE.md` (operating brief, auto-loaded), `HANDOFF.md` (older/partly-stale), `nav_test_log.md`,
+`calib_test/TURN_TEST.md`, `morning_report/` (retrospective).
 
 ## Design principle
 **Fast and reflexive on the Dog; smart and slow on the Mac.** The Pi handles anything that must be
