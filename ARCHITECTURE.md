@@ -127,7 +127,7 @@ flowchart TB
   Alex["Alex / operator"] --> MacTools["Mac tools<br/>./dog, cockpit, rec_run"]
   Claude["Claude / Codex<br/>semantic planning and code changes"] --> MacTools
 
-  MacTools -->|SSH launch / deploy| PiScripts["Pi nav scripts<br/>nav_approach, find_home, return_home, home_return"]
+  MacTools -->|SSH launch and deploy| PiScripts["Pi nav scripts<br/>nav_approach, find_home, return_home, home_return"]
   MacTools -->|manual HTTP commands| Dogbrain["dogbrain.py<br/>HTTP server :8080"]
   PiScripts -->|localhost HTTP| Dogbrain
 
@@ -165,9 +165,9 @@ flowchart TD
   Grabber --> ORB["ORB-SLAM3 mono_stream"]
   ORB --> Exports["slam_latest, slam_feats, slam_cloud, live_pose"]
   Exports --> Cockpit["cockpit.py map panel"]
-  ORB -. persistent atlas .-> Memory["pidog_room.osa<br/>load, merge, save"]
-  Memory -. relocalization hint .-> Navigation["Navigation decisions"]
-  Navigation -. primary control remains .-> Servo["Live visual servoing"]
+  ORB -.->|persistent atlas| Memory["pidog_room.osa<br/>load, merge, save"]
+  Memory -.->|relocalization hint| Navigation["Navigation decisions"]
+  Navigation -.->|primary control remains| Servo["Live visual servoing"]
 ```
 
 SLAM's job is persistent visual memory and relocalization. It is not currently
