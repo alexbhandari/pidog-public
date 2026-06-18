@@ -1,236 +1,335 @@
-# PiDog — System Architecture (what's actually running)
+# PiDog Architecture
 
-How the running system is wired today, on the **Dog** (Raspberry Pi) and the **Mac**. For the
-goals/plan see [OVERVIEW.md](OVERVIEW.md) / [STATUS.md](STATUS.md); this doc is the *machinery*.
+This document explains what the dog can do today, what is missing, what those
+missing pieces unlock, and how the software/hardware pieces fit together.
 
-## The one-line picture
-The **Dog is the body**: a Raspberry Pi runs one always-on program (`dogbrain.py`) that owns all
-the hardware (legs, camera, sensors) and exposes it over HTTP. The **Mac is the brain**: Claude
-(the AI) and a dashboard read the dog's sensors/camera, decide what to do, and send it commands.
-The **fast, reflex-level control runs on the Dog itself** so it never waits on Wi-Fi; the Mac
-sends *goals*, not per-step twitches.
+For the living plan and latest run status, read [STATUS.md](STATUS.md) first.
+This file is the architecture and capability map: the machinery, the control
+loops, and the gaps.
 
+## Core Idea
+
+PiDog is a small quadruped trying to navigate a real house from its own sensors:
+floor-level camera, ultrasonic distance, IMU, touch, sound direction, and battery.
+
+The successful navigation pattern is not metric SLAM-first path planning. It is:
+
+1. Look with the dog's own camera.
+2. Detect a landmark or open direction.
+3. Make one small movement.
+4. Verify the movement with fresh sensor evidence.
+5. Re-sense before deciding again.
+
+The dog moves fine when commanded. The hard parts are perception, obstacle
+understanding, map memory, battery sag, and correcting drift.
+
+```mermaid
+flowchart LR
+  Look["Look<br/>camera, detect, scan"] --> Decide["Decide<br/>center, approach, stop, recover"]
+  Decide --> Move["Move once<br/>forward, turn, back up"]
+  Move --> Verify["Verify<br/>feature flow, ultrasonic, IMU"]
+  Verify -->|moved| Look
+  Verify -->|stalled or unsafe| Recover["Recover<br/>scan for open space, turn, retry"]
+  Recover --> Look
+  Verify -->|fallen| Stop["Stop<br/>refuse locomotion until upright"]
 ```
-            Wi-Fi (HTTP / SSH)
-  MAC  <------------------------->  DOG (Raspberry Pi)
-  - Claude (AI brain, high level)    - dogbrain.py  (HTTP server :8080)
-  - cockpit dashboard  :8088           owns: legs, camera, ultrasonic, IMU, LED
-  - ./dog helper + nav scripts       - ORB-SLAM3 pipeline  (:8081, when mapping)
-  - run recorder
+
+## Capability Map
+
+| Capability | Status | What works | Missing / risk |
+|---|---|---|---|
+| Manual drive from Mac | Working | `cockpit.py` and `./dog act` can send raw or verified movement commands | Operator must still respect no-go zones and verify with fresh frames |
+| Basic movement | Working | Forward/backward/turn gaits execute; forward translates about 8 cm/step | Turn gait drifts; low battery weakens turns |
+| Forward obstacle reflex | Partial | `reflex_loop` stops forward motion when ultrasonic sees `<18 cm` | This is not real obstacle detection: only forward, narrow cone, unreliable with soft/cluttered objects, no side/rear awareness, no obstacle map |
+| Real obstacle detection | Missing | Stall detection can notice some failures after a move | The dog cannot yet perceive furniture/objects as obstacles, map them, or plan around them |
+| Fall safety | Working | IMU detects tip-over and refuses locomotion until upright | It prevents thrashing, but does not self-right |
+| Verified movement / stall detection | Working-ish | `verified_move` checks feature flow, ultrasonic delta, and tilt after a gait | Can miss failures on low-texture scenes or bad distance readings |
+| Turn by visual motion | Working-ish | `turn_vision` measures scene shift instead of trusting gyro turns | Long/weak turns at low battery; feature flow can fail on blur/blank scenes |
+| Face a visible landmark | Working | `face` head-scans for a label, estimates bearing, turns body with `turn_vision` | Depends on YOLO seeing the label reliably |
+| Approach visible landmark | Working-ish | `nav_approach.py` centers `cx`, steps forward, stops by ultrasonic | Target must be visible; obstacle handling is primitive |
+| Find home landmark | Working | `find_home.py` sweeps until it finds the bookshelf (`book`) and faces it | Fixes orientation, not exact position |
+| Return to recorded home position | Partial | `return_home.py` faces bookshelf and matches forward distance | Lateral offset is measured but not corrected |
+| Leave and return | Partial | `home_return.py` can leave open floor, turn back, re-acquire bookshelf | Not yet a clean, repeatedly verified round trip; battery sag is a major factor |
+| Persistent visual SLAM memory | Partial | ORB-SLAM3 map loads, merges, saves, and can relocalize | Monocular scale weak; loses tracking during turns; not the primary navigator |
+| Whole-house map | Missing | Some house-map images/data exist | Needs place graph, route memory, obstacle/no-go modeling, and update logic |
+| Whole-house navigation | Missing | Landmark approach and find-home are building blocks | Needs route executor: find place, choose next landmark, travel, verify, recover |
+| Find Alex | Missing | Pieces exist: camera frames, YOLO/person-class possibility, sound direction, approach | Needs scan/search behavior, identity confirmation, safe approach, moving-target handling |
+| Patrol and report changes | Missing | Recording and map artifacts exist | Needs whole-house map, place revisits, change detection, and report generation |
+
+## What The Dog Can Do Today
+
+The dog can be manually driven, can execute movement commands, can stop forward
+motion when the front ultrasonic sensor sees a close object, can detect a fall,
+can verify many movements after they finish, can detect COCO objects with
+YOLOv4-tiny, can visually steer toward a visible landmark, and can find and face
+the home bookshelf.
+
+It can also run a persistent ORB-SLAM3 process that saves and reloads a visual
+map. That is valuable memory, but it is not yet reliable enough to be the main
+navigation controller.
+
+Real obstacle detection does not work yet. The current obstacle system is a
+narrow forward stop reflex plus post-move stall detection. It does not build an
+obstacle map, see side/rear hazards, reason about turn clearance in all
+directions, or plan around furniture. This is one of the biggest missing pieces
+for real whole-house navigation.
+
+## What Is Missing
+
+| Missing piece | Why it matters | Unlocks |
+|---|---|---|
+| General obstacle perception | The dog must know what it cannot walk into or turn through | Safer autonomy, route execution, whole-house navigation |
+| Whole-house place graph | The dog needs remembered places and landmark relationships, not just one home anchor | Kitchen/living room/entry/back-room navigation |
+| Route executor | It needs to chain local behaviors into long trips | "Go to kitchen", patrol, return from another room |
+| Lateral localization | One wide landmark gives orientation and distance, not side offset | Exact return-home and repeatable docking/home positioning |
+| Better search behavior | Targets will not always be in view | Find landmarks, find Alex, recover after getting lost |
+| Person/Alex confirmation loop | Seeing "person" is not the same as finding Alex | Honest find-Alex behavior |
+| Low-battery turn hardening | Voltage sag makes turns weak and long | Longer autonomous runs without false navigation failures |
+| Optional magnetometer | Gyro/vision can re-anchor, but absolute heading would reduce drift | More reliable route memory and coarse whole-house orientation |
+
+## What The Dog Should Be Able To Do After Those Pieces
+
+With general obstacle perception, a place graph, and a route executor, the dog
+should be able to navigate the whole house as a sequence of local visual tasks:
+
+```mermaid
+flowchart TD
+  Goal["Goal<br/>go to kitchen, find Alex, patrol"] --> Localize["Localize<br/>recognize current place or home anchor"]
+  Localize --> Route["Choose route<br/>place graph and landmarks"]
+  Route --> Segment["Run one segment<br/>find next landmark or doorway"]
+  Segment --> Avoid["Avoid obstacles<br/>front/side clearance, no-go zones, stuck recovery"]
+  Avoid --> Verify["Verify arrival<br/>landmark, distance, place signature"]
+  Verify -->|not there| Segment
+  Verify -->|there| Next["Next waypoint or done"]
+  Next --> Route
 ```
 
----
+The target end state is not "drive by remembered angles." It is repeatable,
+sensor-confirmed behavior:
 
-## On the DOG (Raspberry Pi) — `dogbrain.py`
-One Python program, a multithreaded HTTP server on `0.0.0.0:8080`. It is the *only* thing that
-touches the hardware (SunFounder PiDog library for servos/ultrasonic/IMU/touch/LED, and
-`picamera2` for a 320×240 camera). Kept dependency-light to fit the Pi's RAM.
+- Go from home to named rooms or landmarks.
+- Return home from any known place.
+- Patrol known places and report what changed.
+- Search for Alex using the dog's own camera and passive sound cues.
+- Stop or reroute around obstacles instead of charging blindly.
+- Keep claims honest: "I see the bookshelf", "I am near home distance", "I found
+  a person-shaped target", not "I found Alex" unless a frame confirms it.
 
-### HTTP endpoints (how the Mac talks to the body)
-| Endpoint | What it does |
+## Control Stack
+
+The architecture has three control layers. The Pi is no longer just a dumb body:
+it owns hardware, safety, cheap perception, measured motion, and tight local
+loops. The Mac/Claude side owns high-level judgment, orchestration, review, and
+development.
+
+```mermaid
+flowchart TB
+  Alex["Alex / operator"] --> MacTools["Mac tools<br/>./dog, cockpit, rec_run"]
+  Claude["Claude / Codex<br/>semantic planning and code changes"] --> MacTools
+
+  MacTools -->|SSH launch / deploy| PiScripts["Pi nav scripts<br/>nav_approach, find_home, return_home, home_return"]
+  MacTools -->|manual HTTP commands| Dogbrain["dogbrain.py<br/>HTTP server :8080"]
+  PiScripts -->|localhost HTTP| Dogbrain
+
+  Dogbrain --> Camera["Camera<br/>320x240 JPEG"]
+  Dogbrain --> Sensors["Sensors<br/>ultrasonic, IMU, touch, sound, battery"]
+  Dogbrain --> Body["Body<br/>legs, head, tail, LED, speaker"]
+
+  Dogbrain --> Reflexes["Reflexes<br/>front stop, fall guard"]
+  Dogbrain --> CheapVision["Cheap onboard vision<br/>YOLO detect, feature flow"]
+  Dogbrain --> Motion["Motion primitives<br/>verified_move, turn_vision, face"]
+
+  Dogbrain --> SLAM["ORB-SLAM3 pipeline<br/>optional, separate process"]
+  SLAM --> CockpitMap["Cockpit map panel<br/>:8081 exports"]
+```
+
+## Primary Navigation Method
+
+Primary navigation is visual servoing against live landmarks. The dog does not
+trust commanded turn angles or remembered headings as ground truth.
+
+```mermaid
+flowchart LR
+  Detect["/detect<br/>label, cx, area"] --> Bearing["Bearing estimate<br/>head yaw + cx * half FOV"]
+  Bearing --> Turn["Turn or face<br/>small turn or turn_vision"]
+  Turn --> Approach["Forward step<br/>verified_move"]
+  Approach --> Stop["Stop condition<br/>ultrasonic distance or target lost"]
+  Stop --> Detect
+```
+
+SLAM is a supporting memory system:
+
+```mermaid
+flowchart TD
+  Camera["dogbrain /frame.jpg"] --> Grabber["live_grab_cont.py<br/>writes ~/live/rgb"]
+  Grabber --> ORB["ORB-SLAM3 mono_stream"]
+  ORB --> Exports["slam_latest, slam_feats, slam_cloud, live_pose"]
+  Exports --> Cockpit["cockpit.py map panel"]
+  ORB -. persistent atlas .-> Memory["pidog_room.osa<br/>load, merge, save"]
+  Memory -. relocalization hint .-> Navigation["Navigation decisions"]
+  Navigation -. primary control remains .-> Servo["Live visual servoing"]
+```
+
+SLAM's job is persistent visual memory and relocalization. It is not currently
+the safe path planner for moving through the house.
+
+## Component Details
+
+### `dogbrain.py` - Pi Hardware Owner
+
+`dogbrain.py` is the always-on service on the Pi. It owns the SunFounder PiDog
+hardware and exposes a multithreaded HTTP server on port `8080`.
+
+Important endpoints:
+
+| Endpoint | Purpose |
 |---|---|
-| `GET /health` | liveness check |
-| `GET /sense` | one JSON telemetry blob: distance (ultrasonic), IMU accel/gyro, touch, sound, **battery (v + %)**, heading, odometry, `fallen`/`blocked` flags, RAM |
-| `GET /frame.jpg` | latest camera frame (JPEG) |
-| `GET /detect` | runs **YOLOv4-tiny** (COCO 80-class) on the current frame → objects with `cx` (left/right bearing) + `area_frac` (closeness) |
-| `GET /scan` | pans the head across yaw angles, returns a **depth profile** (distance at each angle) + frames |
-| `GET /imu` | high-rate IMU stream (for SLAM fusion) |
-| `POST /act` | execute one action (the command bus, below) |
+| `GET /health` | Liveness check |
+| `GET /sense` | Telemetry: distance, IMU, touch, sound, battery, heading, odometry, blocked/fallen flags, RAM |
+| `GET /frame.jpg` | Latest onboard camera frame |
+| `GET /detect` | YOLOv4-tiny object detections with `label`, `cx`, `area_frac`, confidence |
+| `GET /scan` | Head-only yaw sweep with ultrasonic distance and frame per yaw |
+| `GET /imu` | High-rate IMU stream for SLAM experiments |
+| `GET /battraw` | Battery ADC samples for sag debugging |
+| `GET /gyrotest` | Stationary gyro drift test |
+| `POST /act` | Command bus for movement, posture, head, LEDs, behavior toggles |
 
-### Background threads (always running)
-- **`reflex_loop` (20 Hz)** — safety reflexes: hard-stop forward motion if an obstacle is `<18 cm`;
-  **fall watchdog** that flags `fallen` when the IMU says the body tipped `>50°` off upright (and
-  auto-clears when righted).
-- **`behavior_loop`** — optional "alive" autonomy (idle head glances, tail, tilt). Toggled off for
-  manual/auto driving.
-- **`heading_loop`** — integrates the gyro into a continuous heading estimate.
-- **`imu_sampler` (~250 Hz)** — fills an IMU buffer that the SLAM pipeline reads.
+Core onboard routines:
 
-### The command bus: `POST /act {"cmd": ...}`
-- **Locomotion:** `forward`, `backward`, `turn_left`, `turn_right`, `trot`.
-  - Each can run **verified** (default) or **raw** (`"verify": false`). *Verified* = move, then
-    check it actually happened (camera feature-flow + ultrasonic + IMU tilt) and detect
-    **stall/fall** — ~seconds per step, for autonomy. *Raw* = fire-and-return — milliseconds, for
-    snappy **manual** driving. Background reflexes guard both.
-- **Smart turns:** `turn_vision` — turns and **measures the real rotation from the camera** (the
-  gyro under-reports ~3×); batched for speed; if it commands a turn but the view doesn't change it
-  knows it's **wedged → backs up to make clearance and retries** (up to 3×), then stops and waits.
-- **`face <label>`** — fast turn-to-face a landmark: pans the **head** to find the target's bearing
-  (quick, no body drift), then turns the body to it via `turn_vision`.
-- **`stop`** — true **emergency stop**: handled outside the action lock so it *interrupts* a running
-  turn/routine immediately (≈2 ms) instead of queuing behind it.
-- **Posture / expression:** `stand`, `sit`, `lie`, `look` (head), `head_center`, `bark`, `rgb`,
-  `battery_led`, etc.
+| Routine | What it does | Status |
+|---|---|---|
+| `reflex_loop` | Stops forward motion if the forward ultrasonic sees `<18 cm`; watches for falls | Partial obstacle safety, working fall guard |
+| `behavior_loop` | Optional idle/reactive behavior: glances, tail, touch/sound reactions | Must be disabled for navigation |
+| `heading_loop` | Integrates gyro into a heading estimate | Useful telemetry, not navigation truth |
+| `imu_sampler` | Buffers IMU samples for `/imu` | Supports SLAM/VIO experiments |
+| `verified_move` | Runs a gait, waits for it to settle, checks motion/fall/stall | Working-ish |
+| `turn_vision` | Uses camera feature flow to measure real turn amount | Working-ish |
+| `face_landmark` | Head-scan for a label, then body-turn toward it | Working when detection is reliable |
+| `stop` handling | Sets abort flag and hard-stops outside the action lock | Important safety path |
 
-### Onboard "graduated" routines
-These are the robust pieces pushed onto the Pi so they run network-free: `verified_move`
-(stall/fall detection), `turn_vision` (measured turn + stuck-recovery), `face_landmark`
-(head-scan + turn), the obstacle and fall reflexes, and emergency-stop abort.
+### `./dog` - Mac CLI Helper
 
-### SLAM pipeline (separate, only when mapping)
-ORB-SLAM3 (monocular), built from source at `~/ORB_SLAM3` on the Pi. Started/stopped on demand
-(not part of the always-on server). See **[SLAM pipeline — detailed](#slam-pipeline--detailed)**
-below for the file-by-file data flow, config, and persistence mechanism.
+`./dog` is the operator shortcut. It SSHes to the Pi and curls
+`localhost:8080`. It supports `sense`, `see`, `perceive`, `scan`, `act`,
+`health`, `up`, `quiet`, `approach`, and `unstick`.
 
----
+`quiet`, `approach`, and `unstick` copy `nav_approach.py` to the Pi and run it
+there. This matters because the tight loop then calls `localhost:8080` on the Pi
+instead of paying a WiFi hop per control step.
 
-## On the MAC
-Nothing here touches hardware — it all talks to the dog over the network.
+### Navigation Scripts
 
-### `./dog` — command-line helper (Bash)
-Quick operator commands, each opens an SSH session to the Pi and curls `localhost:8080`:
-`sense`, `see` (pull a frame), `perceive` (frame + sense), `scan`, `health`, `up` (reachability),
-`quiet` (turn autonomy off), `approach`/`unstick` (run nav helpers).
+The navigation scripts are version-controlled on the Mac, but their intended
+tight control loops run on the Pi.
 
-### `cockpit/cockpit.py` — live dashboard (`http://localhost:8088`)
-A web dashboard that **proxies to the dog over HTTP** (resolves `pidog.local`→IPv4 to dodge a 5 s
-IPv6-timeout that used to cause lag). Shows the camera, sensors, and a SLAM map panel; lets you
-**drive manually** (keyboard, snappy `verify:false` commands), records sessions, and has a
-**MANUAL / AUTONOMOUS toggle** so you always know which mode is active.
+| File | Purpose | Current status |
+|---|---|---|
+| `nav_approach.py` | Disable autonomy, center head, detect target, steer on `cx`, step forward, unstick on stalls | Main working approach primitive |
+| `find_home.py` | Sweep with head/body turns until the bookshelf appears, then center it | Working for facing home |
+| `record_home.py` | Face bookshelf, scan depth/landmark signature, write `home_signature.json` | Captures a home fingerprint |
+| `return_home.py` | Face bookshelf, match recorded forward distance, report depth-profile error | Partial exact-home return |
+| `home_return.py` | Leave open floor, turn back, re-acquire bookshelf, report distance error | Partial round-trip test |
+| `navigate_return.py` | Older leave-and-return toward-bookshelf routine with SLAM cross-check | Legacy; still has old timeout behavior |
 
-### Navigation routines
-See **[Navigation — exactly how it works](#navigation--exactly-how-it-works-on-the-dog)** below for
-the full detail. In short: each routine is a small Python script, version-controlled here but
-**`scp`-deployed to the Pi and executed there** (invoked over SSH), so its tight per-step loop
-curls `localhost:8080` with no Wi-Fi hop per step.
+### `cockpit/cockpit.py` - Manual Drive And Debug Dashboard
 
-### `rec_run.py` — run recorder
-Wraps any run and saves the **onboard camera** (`/frame.jpg`) + **dog data** (`/sense`) ~1×/sec,
-stitched into `dog.mp4` + `data.jsonl` under `runs/` (and mirrored to GitHub `recordings/` for
-phone viewing). *(External Photo-Booth screen capture can't be grabbed from the shell sandbox, so
-the room-view comes from screenshots instead.)*
+The cockpit is a Mac-side web dashboard at `http://localhost:8088`.
 
-### Claude (the AI) — the high-level brain
-Runs on the Mac, in the loop only at the high level: looks through the dog's camera, recognizes
-things, sets goals, decides what graduates to an onboard routine. It is **never** in the fast
-per-step control loop.
+It shows the onboard camera, telemetry, command latency, recording controls, and
+an optional SLAM map panel. It proxies manual drive commands to `dogbrain.py`.
+Manual mode sends snappy `verify:false` movement commands and turns off onboard
+autonomy; autonomous mode allows the dog's alive/react behavior.
 
----
+Cockpit recording saves onboard frames, sense snapshots, and action events under
+`cockpit_sessions/`. This is separate from `rec_run.py`.
 
-## How it all talks (data flows)
-- **Manual driving:** Cockpit (Mac :8088) → HTTP `/act verify:false` → `dogbrain` (:8080) → legs.
-  ~20 ms round trip.
-- **Autonomous nav:** Claude → SSH → a nav script *on the Pi* → tight loop of `localhost:8080`
-  calls (`/detect`, `/sense`, `/act`) → returns a result. Network is hit once (to launch), not
-  per step.
-- **Perception:** `dogbrain` owns the camera and serves `/frame.jpg`, `/detect` (YOLO),
-  `/scan` (depth), `/sense`.
-- **SLAM:** `dogbrain /frame.jpg` → grabber → ORB-SLAM3 → exports → `:8081` → cockpit map panel.
-- **Recording:** `rec_run.py` (Mac) samples `/frame.jpg` + `/sense` → `dog.mp4` + `data.jsonl`.
+### `rec_run.py` - Run Recorder
 
-## Navigation — exactly how it works on the dog
-Every navigation routine is a Python script that runs **on the Pi** and drives the body by calling
-`localhost:8080` in a loop. They all compose the **same handful of primitives** and the **same
-rule**: *look → decide → one small move → look again* (never blind-dead-reckon a path).
+`rec_run.py` runs on the Mac and records a run into `runs/<stamp>_<name>/`.
+It samples:
 
-### The shared building blocks
-- **Landmark bearing:** `GET /detect` → for each object, `cx` (−1 left … +1 right) and `area_frac`
-  (bigger = closer). Detections are **frame-smoothed** (require the object in ≥2 of 3 frames) to
-  kill YOLO flicker. A landmark's true bearing from the body = `head_yaw + cx·(half-FOV≈31°)`.
-- **Distance:** `GET /sense distance_cm` (ultrasonic), **median-filtered** over several reads,
-  rejecting `≤0` (no echo) and out-of-range spikes.
-- **Depth profile:** pan the head across yaws and read distance at each → a "silhouette" of the
-  surroundings (used to fingerprint a spot and to find the most-open direction).
-- **Moves:** `forward`/`backward` (verified — with stall/fall detection), `turn_vision deg`
-  (camera-measured turn that backs up if wedged), `face label` (head-scan to a landmark's bearing,
-  then turn the body to it).
+- external screen screenshots with `screencapture`, useful when Photo Booth or
+  another room-view camera is foregrounded;
+- onboard dog frames from `/frame.jpg`;
+- selected telemetry from `/sense`.
 
-### The routines, file by file
-- **`nav_approach.py`** — visual-servo *approach* to a landmark. `quiet()` (autonomy off) first.
-  Loop: median distance + smoothed `/detect` of the target. If off-center (`|cx|>0.30`) → small
-  `turn_left/right`; else `forward` one step; stop when `distance < stop_cm`. If a move comes back
-  `moved:false` (stalled) → **`unstick()`**: head-scan the depth profile, pick the most-open yaw,
-  turn the body that way (try the other way if that turn also stalls = boxed), then drive forward —
-  *"can't go this way → turn and go where the camera can see."* Up to 3 tries, then gives up. Has
-  `--quiet-only`/`--unstick-only` modes; surfaced as `./dog approach` / `./dog unstick`.
-- **`find_home.py`** — locate **and face** the home landmark (the bookshelf = `book`). Up to 9
-  rounds: head-scan a few yaws running `/detect`; if the bookshelf appears, turn the body toward
-  the yaw it was seen at and `center_book` (servo until `cx≈0`); else `turn_vision(45°)` to the
-  next sector and repeat. Result = facing the bookshelf (this fixes **orientation only**). Exits on
-  fallen/stuck/aborted.
-- **`record_home.py`** — capture a **home-position fingerprint**. `face("book")` first (canonical
-  orientation), then head-scan `−60…+60°` recording at each yaw: the **ultrasonic distance** (→ a
-  depth profile) and any detected landmark's **bearing + area + confidence**. Saves
-  `home_signature.json = {fwd_dist_cm, heading_deg, depth_profile{yaw:dist}, landmarks{...}}`.
-- **`return_home.py`** — return to that recorded position. Loads the signature; `face("book")`
-  (orientation); then steps forward/back until the live distance matches the home
-  distance-to-bookshelf (±12 cm), re-facing every couple steps; finally re-scans the depth profile
-  and reports `profile_err` vs home. **Honest v1:** fixes orientation + distance; it *measures* but
-  does **not** fix the lateral offset (the dog can't strafe, and one wide landmark can't pin
-  left-right position).
-- **`home_return.py`** — leave-and-return, open-floor version. Center on `book` → record `D_home`;
-  `turn_vision(180°)` to face the open room; walk forward N steps; `turn_vision(180°)` back;
-  re-acquire the bookshelf; report distance error. Battery guard uses **voltage** (the `%` glitches).
-- **`navigate_return.py`** — older leave-and-return, toward-bookshelf version. Center → `D_home`;
-  OUT: visual-servo approach the bookshelf to ~85 cm; `turn_vision(180°)`; BACK: forward ~same #
-  steps; RE-FACE: turn until `book` centered; reports distance error + a SLAM x/z cross-check.
+It stitches `ext.mp4` and `dog.mp4` with `ffmpeg` and writes `data.jsonl` plus
+`run.log`. Published clips live in `recordings/`.
 
-### What works vs. what's hard (navigation)
-Working: approach-a-landmark, stall→unstick, measured turns with stuck-backup, find-and-face the
-landmark, record a fingerprint. **Hard/unsolved:** returning to an *exact position* — orientation
-and distance-to-one-landmark are reliable, but the **lateral axis** isn't (needs a 2nd landmark to
-triangulate, scan-matching, or live SLAM). And **there is no reliable position tracking**: odometry
-only counts forward/back steps (~8 cm each) and ignores the big sideways drift that turns cause, so
-the dead-reckoned position is wrong after any turning.
+### SLAM Pipeline
 
-## SLAM pipeline — detailed
-ORB-SLAM3 (monocular), built from source at `~/ORB_SLAM3`. Launched by `slam_live.sh`, stopped by
-`slam_stop.sh`. Three pieces, decoupled through the filesystem:
+The SLAM pipeline is optional and separate from the always-on `dogbrain.py`
+server.
 
-1. **Grabber — `slam/live_grab_cont.py`** (on the Pi): every ~0.07 s pulls `localhost:8080/frame.jpg`
-   into `~/live/rgb/<epoch>.jpg`, pruning to the last ~40 frames. (Decouples camera I/O from SLAM.)
-2. **SLAM node — `slam/mono_stream.cc`** → built as `~/ORB_SLAM3/Examples/Monocular/mono_stream`.
-   Tail-follows `~/live/rgb`, feeds each new frame to `TrackMonocular`, and writes exports:
-   - `~/slam_latest.txt` — one status line: `state x y z yaw cloudsize matched feats frame`.
-   - `~/slam_feats.txt` — 2D keypoints (+ matched flag) for the camera overlay.
-   - `~/slam_cloud.txt` — accumulated 3D map points.
-   - `~/live_pose.txt` — appended pose log.
-3. **Static server (`python3 -m http.server 8081`)** serves those files; the **cockpit** polls
-   `:8081` and draws the top-down map + feature overlay.
+| Piece | Role |
+|---|---|
+| `slam/live_grab_cont.py` | Pulls frames from `localhost:8080/frame.jpg` into `~/live/rgb` |
+| `slam/mono_stream.cc` | ORB-SLAM3 monocular node, follows the frame folder |
+| `slam/pidog_mono.yaml` | Camera/ORB settings and persistent atlas config |
+| `slam/slam_live.sh` | Starts grabber, SLAM node, and static server |
+| `slam/slam_stop.sh` | Stops the pipeline, allowing atlas save |
+| `slam/System.cc.patched` | ORB-SLAM3 shutdown/save fix |
+| `slam/mono_stream_imu.cc` and related IMU files | Mono-inertial experiment, currently unused because IMU init NaN-crashes |
 
-**Config — `slam/pidog_mono.yaml`:** pinhole `fx=fy=266` (ESTIMATED, not properly calibrated),
-320×240, 1000 ORB features. The last two lines, `System.LoadAtlasFromFile/SaveAtlasToFile:
-"pidog_room"`, enable **persistence**.
+Current SLAM truth:
 
-**Persistence (load → merge → save):** on start it loads the saved atlas (`pidog_room.osa`); the new
-session **merges** into it via place-recognition when it re-sees mapped scenery; on `SIGTERM` (from
-`slam_stop.sh`) it saves the merged atlas back. This needed a **patch to ORB-SLAM3 itself**
-(`slam/System.cc.patched`): wait for the LocalMapping + LoopClosing threads to finish *before*
-`SaveAtlas`, otherwise the save raced the mapper and segfaulted.
+- Monocular SLAM can track, build, load, merge, and save a persistent atlas.
+- It often loses tracking during turns.
+- Relocalization is useful but intermittent.
+- Scale is not trustworthy enough for whole-house metric path planning.
+- It should support place memory, not replace live visual servoing.
 
-**Status:** monocular SLAM tracks, builds, and persists a map; it **loses tracking during turns**
-(rotation + motion blur) and **relocalizes only intermittently**. A mono-**inertial** (IMU-fused)
-variant exists — `slam/mono_stream_imu.cc`, `slam/pidog_imu.yaml`, `slam/live_grab_imu*.py`,
-`slam/slam_live_imu.sh`, fed by dogbrain's `/imu` stream — but its IMU init **NaN-crashes**, so it's
-not used. `slam/calibrate.py` is a checkerboard intrinsic-calibration helper (the `fx=266` is still
-just an estimate).
+## Data And Memory Artifacts
 
-## Complete file inventory
-**On the Dog (Pi):**
-- `dogbrain.py` — the always-on HTTP sensorimotor server (everything in the "On the DOG" section).
-- `dogbrain.service` — systemd unit that keeps `dogbrain.py` running / restarts it.
-- `~/ORB_SLAM3/...` (built from source, not in this repo) + the `slam/` files below, deployed to `~/`.
+| Artifact | Purpose |
+|---|---|
+| `home_signature.json` | Recorded home-facing-bookshelf distance, depth profile, and landmark sightings |
+| `house_map.json` | Early persistent house/place map artifact |
+| `house_map/` | Reference images by place |
+| `recordings/` | Published run videos |
+| `runs/` | Local recorder output, gitignored |
+| `cockpit_sessions/` | Cockpit recordings, gitignored |
 
-**SLAM (`slam/`, mirrored here, deployed to the Pi):**
-- `mono_stream.cc` — monocular SLAM node (exports pose/map). `slam_live.sh` / `slam_stop.sh` —
-  start/stop. `live_grab_cont.py` — frame grabber. `pidog_mono.yaml` — camera/ORB/atlas config.
-  `System.cc.patched` — the atlas-save fix (mirror of the patched ORB-SLAM3 source).
-- IMU-fused (unused, NaN-crashes): `mono_stream_imu.cc`, `pidog_imu.yaml`, `live_grab_imu.py`,
-  `live_grab_imu_rec.py`, `slam_live_imu.sh`. `calibrate.py` — checkerboard intrinsics. `README.md`.
+## Whole-House Navigation Target
 
-**On the Mac:**
-- `dog` — CLI helper (Bash). `cockpit/cockpit.py` — dashboard server (:8088).
-- Nav routines (deployed to Pi, run there): `nav_approach.py`, `find_home.py`, `record_home.py`,
-  `return_home.py`, `home_return.py`, `navigate_return.py`. `home_signature.json` — saved home fingerprint.
-- `rec_run.py` — run recorder. `runs/` — recordings (gitignored). `recordings/` — published clips.
-- `sync_public_status.sh` — mirrors the docs to the public repo.
+The system still needs to grow from "local landmark servoing" to "whole-house
+navigation." The likely architecture is a place graph layered above the existing
+local primitives.
 
-**Docs:** `ARCHITECTURE.md` (this), `OVERVIEW.md` (plain-language), `STATUS.md` (living plan),
-`CLAUDE.md` (operating brief, auto-loaded), `HANDOFF.md` (older/partly-stale), `nav_test_log.md`,
-`calib_test/TURN_TEST.md`, `morning_report/` (retrospective).
+```mermaid
+flowchart TD
+  Places["Place graph<br/>home, living room, kitchen, entry, back room"] --> Edges["Route edges<br/>what landmark/doorway to find next"]
+  Edges --> Primitive["Local primitive<br/>find, face, approach, verify"]
+  Primitive --> Safety["Safety layer<br/>front stop, obstacle model, stuck recovery"]
+  Safety --> Evidence["Evidence log<br/>frames, detections, distances, SLAM status"]
+  Evidence --> Update["Update map<br/>new obstacles, changed landmarks, confidence"]
+  Update --> Places
+```
 
-## Design principle
-**Fast and reflexive on the Dog; smart and slow on the Mac.** The Pi handles anything that must be
-quick or safe (reflexes, stall/fall, measured turns, emergency stop); the Mac/Claude handle
-perception and goals. Commands cross Wi-Fi as *intentions*, not as a per-step control loop —
-because a Wi-Fi hop per twitch would be too laggy to control the body.
+This is the missing bridge between the current robot and the desired robot.
+Once it exists, high-level commands become possible:
+
+- "Go to the kitchen."
+- "Return home."
+- "Patrol the known rooms."
+- "Find Alex."
+- "Tell me what changed."
+
+Each command should decompose into known-place recognition, route selection,
+one local movement segment, verification, and recovery. The dog should never
+claim success without fresh sensor or frame evidence.
+
+## Design Rules
+
+1. Navigate by live vision, not remembered angles.
+2. Disable alive/react autonomy before navigation so the head does not corrupt
+   landmark bearings.
+3. Treat obstacle detection as missing. Forward ultrasonic stop is a reflex, not
+   a world model.
+4. Keep the laptop/home-base side as a no-go zone.
+5. Use SLAM as persistent memory and relocalization support, not as the primary
+   path planner yet.
+6. Verify motion with fresh evidence. If two movements do not match prediction,
+   stop and diagnose.
+7. Be honest in language: report what sensors confirmed, not what we hoped
+   happened.
