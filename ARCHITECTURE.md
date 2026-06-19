@@ -32,29 +32,51 @@ flowchart LR
   Verify -->|stalled or unsafe| Recover["Recover<br/>scan for open space, turn, retry"]
   Recover --> Look
   Verify -->|fallen| Stop["Stop<br/>refuse locomotion until upright"]
+  classDef proven fill:#1f7a33,stroke:#0f3d1a,color:#fff
+  classDef wip fill:#b8860b,stroke:#6b4f08,color:#fff
+  classDef assumed fill:#c2641a,stroke:#7a3f10,color:#fff
+  classDef broken fill:#9e1c1c,stroke:#5c0f0f,color:#fff
+  classDef todo fill:#777,stroke:#444,color:#fff
+  class Look,Decide,Stop proven
+  class Move,Verify,Recover wip
 ```
+
+## Status Legend
+
+Color shows how strongly each capability is **proven**, not just whether code exists:
+
+| Badge | Meaning |
+|---|---|
+| 🟢 **Proven** | verified by an actual test, with a recorded result / proof |
+| 🟡 **Working-ish** | observed to work, but flaky, partial, or only under some conditions |
+| 🟠 **Assumed** | believed to work from reading the code, but **not** actually tested |
+| 🔴 **Not working** | tried; does not achieve the goal yet |
+| ⚪ **Not implemented** | does not exist yet |
+
+The **Evidence / action** column cites the real test behind a 🟢, or the concrete action needed to
+turn a non-green row green. The diagrams below use the same colors (green = proven … grey = not built).
 
 ## Capability Map
 
-| Capability | Status | What works | Missing / risk |
-|---|---|---|---|
-| Manual drive from Mac | Working | `cockpit.py` and `./dog act` can send raw or verified movement commands | Operator must still respect no-go zones and verify with fresh frames |
-| Basic movement | Working | Forward/backward/turn gaits execute; forward translates about 8 cm/step | Turn gait drifts; low battery weakens turns |
-| Forward obstacle reflex | Partial | `reflex_loop` stops forward motion when ultrasonic sees `<18 cm` | This is not real obstacle detection: only forward, narrow cone, unreliable with soft/cluttered objects, no side/rear awareness, no obstacle map |
-| Real obstacle detection | Missing | Stall detection can notice some failures after a move | The dog cannot yet perceive furniture/objects as obstacles, map them, or plan around them |
-| Fall safety | Working | IMU detects tip-over and refuses locomotion until upright | It prevents thrashing, but does not self-right |
-| Verified movement / stall detection | Working-ish | `verified_move` checks feature flow, ultrasonic delta, and tilt after a gait | Can miss failures on low-texture scenes or bad distance readings |
-| Turn by visual motion | Working-ish | `turn_vision` measures scene shift instead of trusting gyro turns | Long/weak turns at low battery; feature flow can fail on blur/blank scenes |
-| Face a visible landmark | Working | `face` head-scans for a label, estimates bearing, turns body with `turn_vision` | Depends on YOLO seeing the label reliably |
-| Approach visible landmark | Working-ish | `nav_approach.py` centers `cx`, steps forward, stops by ultrasonic | Target must be visible; obstacle handling is primitive |
-| Find home landmark | Working | `find_home.py` sweeps until it finds the bookshelf (`book`) and faces it | Fixes orientation, not exact position |
-| Return to recorded home position | Partial | `return_home.py` faces bookshelf and matches forward distance | Lateral offset is measured but not corrected |
-| Leave and return | Partial | `home_return.py` can leave open floor, turn back, re-acquire bookshelf | Not yet a clean, repeatedly verified round trip; battery sag is a major factor |
-| Persistent visual SLAM memory | Partial | ORB-SLAM3 map loads, merges, saves, and can relocalize | Monocular scale weak; loses tracking during turns; not the primary navigator |
-| Whole-house map | Missing | Some house-map images/data exist | Needs place graph, route memory, obstacle/no-go modeling, and update logic |
-| Whole-house navigation | Missing | Landmark approach and find-home are building blocks | Needs route executor: find place, choose next landmark, travel, verify, recover |
-| Find Alex | Missing | Pieces exist: camera frames, YOLO/person-class possibility, sound direction, approach | Needs scan/search behavior, identity confirmation, safe approach, moving-target handling |
-| Patrol and report changes | Missing | Recording and map artifacts exist | Needs whole-house map, place revisits, change detection, and report generation |
+| Capability | Status | What works | Gap / risk | Evidence — test, result, proof (or action to reach 🟢) |
+|---|---|---|---|---|
+| Manual drive from Mac | 🟢 Proven | `cockpit.py` + `./dog act` send raw/verified commands | Operator must still respect no-go zones | Cockpit `/act` round-trip measured **~20 ms** after the IPv4 fix; driven live via the cockpit |
+| Basic movement (gaits) | 🟢 Proven | Forward/turn gaits execute; forward ≈ 8 cm/step | Turn gait drifts sideways; backward is weak | Verified forward step measured **−8.2 cm** ultrasonic + 24.5 px flow; earlier 139→131 cm ≈ 8 cm/step |
+| Forward obstacle reflex (<18 cm) | 🟡 Working-ish | `reflex_loop` stops forward motion under 18 cm | Forward narrow cone only; soft/cluttered objects unreliable; no side/rear | Telemetry shows it firing: `last_reflex {obstacle, 16.31 cm}`, `reflex_count 7`. Action: widen into a real obstacle model |
+| Real obstacle detection | ⚪ Not implemented | — | Cannot perceive / map / avoid furniture | Action: build an occupancy/obstacle model from depth-scan + camera, with side/rear awareness |
+| Fall safety | 🟢 Proven | IMU tip-over → refuses locomotion until upright | Does not self-right | `journalctl`: `FALL detected -> fallen=True` fired on a real tip-over; IMU showed gravity on the Z axis; locomotion refused |
+| Verified move / stall detection | 🟡 Working-ish | `verified_move` checks flow + ultrasonic + tilt | **Missed a real wedge** (leg-shuffle jitter read as motion) | Forward → `moved:true` (24.5 px, −8.2 cm) ✓, but failed to flag a real stuck. Action: detect stall by **gyro heading-delta**, not camera flow; re-test vs a known wedge |
+| Turn by visual motion (`turn_vision`) | 🟡 Working-ish | Measures real rotation from scene shift, not gyro | Under-rotates at low battery; slow | Calibrated on the external cam: **cmd 90° → ~90° actual** (gyro gave ~30°). Action: low-battery turn hardening; re-validate measured-vs-actual across charge levels |
+| Face a visible landmark (`face`) | 🟠 Assumed | Head-scan bearing → body turn via `turn_vision` | Standalone command didn't converge in test | `face book` test **stuck at ~64° after 44 s** (never centered); the mechanism works inside `find_home`. Action: re-test `face` to clean convergence on a charged pack; record |
+| Approach a landmark (`nav_approach`) | 🟢 Proven | Centers `cx`, steps forward, stops on ultrasonic; unsticks on stall | YOLO flickers at range | Recorded run **184 → 61 cm**, kept the bookshelf centered (cx≈0), no false stalls |
+| Find home landmark (`find_home`) | 🟢 Proven | Sweeps, detects `book`, faces it | Fixes **orientation only**, not position | Found the shelf on sweep 0 and centered to **cx −0.07** @ ~107 cm; recorded `find_home_onboard.mp4` |
+| Return to exact home **position** (`return_home`) | 🔴 Not working | Faces bookshelf + matches forward distance | **Lateral position is wrong** | Test: distance 65 vs 75 cm ✓ but **depth-profile error 112 cm** — ended at a different spot (furniture 14 cm left vs open at home). Action: 2nd landmark to triangulate / scan-matching / live SLAM relocalization |
+| Leave and return (`home_return`) | 🔴 Not working | Physically leaves, turns back, re-acquires shelf | Not a clean verified round-trip | Runs degraded by battery sag (turns timed out, walks cut short); never a clean round-trip. Action: full charge + turn hardening + fix `navigate_return` timeout; record a clean round-trip |
+| Persistent SLAM memory | 🟢 Proven (memory) / 🟡 (as navigator) | Atlas load→merge→save; relocalizes | Loses tracking in turns; not the path planner | **Proven**: `*Merge detected/finished`, osa grew 1.09→1.92 MB, relocalized — without gdb. Not yet usable as a navigator |
+| Whole-house map | ⚪ Not implemented | `house_map/` has reference images only | No place graph / route memory | Action: build a landmark place-graph + obstacle/no-go layer with update logic |
+| Whole-house navigation | ⚪ Not implemented | Approach + find-home are building blocks | No route executor | Action: route executor — find place → choose next landmark → travel → verify → recover |
+| Find Alex | ⚪ Not implemented | Camera, person-class, sound direction exist | No search/confirm/approach loop | Action: scan-search behavior + identity confirmation (frame) + safe moving-target approach |
+| Patrol & report changes | ⚪ Not implemented | Recorder + map images exist | No revisit / change detection | Action: whole-house map + place revisits + change detection + report generation |
 
 ## What The Dog Can Do Today
 
@@ -102,6 +124,8 @@ flowchart TD
   Verify -->|not there| Segment
   Verify -->|there| Next["Next waypoint or done"]
   Next --> Route
+  classDef todo fill:#777,stroke:#444,color:#fff
+  class Goal,Localize,Route,Segment,Avoid,Verify,Next todo
 ```
 
 The target end state is not "drive by remembered angles." It is repeatable,
@@ -141,6 +165,10 @@ flowchart TB
 
   Dogbrain --> SLAM["ORB-SLAM3 pipeline<br/>optional, separate process"]
   SLAM --> CockpitMap["Cockpit map panel<br/>:8081 exports"]
+  classDef proven fill:#1f7a33,stroke:#0f3d1a,color:#fff
+  classDef wip fill:#b8860b,stroke:#6b4f08,color:#fff
+  class MacTools,Dogbrain,Camera,Sensors,Body,Reflexes,CheapVision,CockpitMap proven
+  class PiScripts,Motion,SLAM wip
 ```
 
 ## Primary Navigation Method
@@ -155,6 +183,10 @@ flowchart LR
   Turn --> Approach["Forward step<br/>verified_move"]
   Approach --> Stop["Stop condition<br/>ultrasonic distance or target lost"]
   Stop --> Detect
+  classDef proven fill:#1f7a33,stroke:#0f3d1a,color:#fff
+  classDef wip fill:#b8860b,stroke:#6b4f08,color:#fff
+  class Detect,Bearing,Approach,Stop proven
+  class Turn wip
 ```
 
 SLAM is a supporting memory system:
@@ -168,6 +200,10 @@ flowchart TD
   ORB -.->|persistent atlas| Memory["pidog_room.osa<br/>load, merge, save"]
   Memory -.->|relocalization hint| Navigation["Navigation decisions"]
   Navigation -.->|primary control remains| Servo["Live visual servoing"]
+  classDef proven fill:#1f7a33,stroke:#0f3d1a,color:#fff
+  classDef wip fill:#b8860b,stroke:#6b4f08,color:#fff
+  class Camera,Grabber,ORB,Exports,Cockpit,Memory,Servo proven
+  class Navigation wip
 ```
 
 SLAM's job is persistent visual memory and relocalization. It is not currently
@@ -202,10 +238,10 @@ Core onboard routines:
 | `behavior_loop` | Optional idle/reactive behavior: glances, tail, touch/sound reactions | Must be disabled for navigation |
 | `heading_loop` | Integrates gyro into a heading estimate | Useful telemetry, not navigation truth |
 | `imu_sampler` | Buffers IMU samples for `/imu` | Supports SLAM/VIO experiments |
-| `verified_move` | Runs a gait, waits for it to settle, checks motion/fall/stall | Working-ish |
-| `turn_vision` | Uses camera feature flow to measure real turn amount | Working-ish |
-| `face_landmark` | Head-scan for a label, then body-turn toward it | Working when detection is reliable |
-| `stop` handling | Sets abort flag and hard-stops outside the action lock | Important safety path |
+| `verified_move` | Runs a gait, **waits for it to settle**, then checks motion (feature-flow + ultrasonic delta) + IMU tilt to flag stall/fall | 🟡 Working-ish (missed a real wedge once) |
+| `turn_vision` | Turns a batch of steps at a time and measures the **real rotation** from camera feature-flow (gyro under-reports ~3×), accumulating to the target. If a batch shows **no scene shift = wedged → it backs up to make clearance and retries (≤3×)**, then stops and waits for input | 🟡 Working-ish (under-rotates at low battery) |
+| `face_landmark` | **Head-scan loop** (fast, no body drift): pans the head across a few yaws, computes each landmark's bearing `= head_yaw + cx·half-FOV`, picks the best sighting, then turns the body to it via `turn_vision`; repeats until centered | 🟠 Assumed (standalone `face` test didn't converge) |
+| `stop` handling | Sets the **abort flag** and hard-stops **outside the action lock**, so it interrupts a running routine instead of queuing behind it | 🟢 Proven (interrupted a turn in ~2 ms) |
 
 ### `./dog` - Mac CLI Helper
 
@@ -248,13 +284,15 @@ Cockpit recording saves onboard frames, sense snapshots, and action events under
 `rec_run.py` runs on the Mac and records a run into `runs/<stamp>_<name>/`.
 It samples:
 
-- external screen screenshots with `screencapture`, useful when Photo Booth or
-  another room-view camera is foregrounded;
-- onboard dog frames from `/frame.jpg`;
-- selected telemetry from `/sense`.
+- onboard dog frames from `/frame.jpg` — the reliable stream (this is the real recording);
+- selected telemetry from `/sense`;
+- external screen screenshots via `screencapture` — **does not actually work in this sandbox**:
+  the shell can only capture the **desktop, not the Photo Booth window** (macOS runs them on
+  separate Spaces), so `ext.mp4` is the desktop, not a room view. The external/room view is
+  instead delivered as inline computer-use screenshots, not via `rec_run`.
 
-It stitches `ext.mp4` and `dog.mp4` with `ffmpeg` and writes `data.jsonl` plus
-`run.log`. Published clips live in `recordings/`.
+It stitches `dog.mp4` (good) and `ext.mp4` (currently the desktop) with `ffmpeg` and writes
+`data.jsonl` plus `run.log`. Published onboard clips live in `recordings/`.
 
 ### SLAM Pipeline
 
@@ -304,6 +342,10 @@ flowchart TD
   Safety --> Evidence["Evidence log<br/>frames, detections, distances, SLAM status"]
   Evidence --> Update["Update map<br/>new obstacles, changed landmarks, confidence"]
   Update --> Places
+  classDef wip fill:#b8860b,stroke:#6b4f08,color:#fff
+  classDef todo fill:#777,stroke:#444,color:#fff
+  class Primitive,Safety,Evidence wip
+  class Places,Edges,Update todo
 ```
 
 This is the missing bridge between the current robot and the desired robot.
