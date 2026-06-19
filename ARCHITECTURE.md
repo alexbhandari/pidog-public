@@ -53,8 +53,10 @@ Color shows how strongly each capability is **proven**, not just whether code ex
 | 🔴 **Not working** | tried; does not achieve the goal yet |
 | ⚪ **Not implemented** | does not exist yet |
 
-The **Evidence / action** column cites the real test behind a 🟢, or the concrete action needed to
-turn a non-green row green. The diagrams below use the same colors (green = proven … grey = not built).
+The capability table's last column (**Evidence**) cites the real test behind each 🟢. The
+**[Path to 🟢](#path-to--concrete-next-steps-for-every-non-green)** section right after it gives the
+concrete build/test steps to turn every non-green capability green. The diagrams use the same colors
+(green = proven … grey = not built).
 
 ## Capability Map
 
@@ -77,6 +79,26 @@ turn a non-green row green. The diagrams below use the same colors (green = prov
 | Whole-house navigation | ⚪ Not implemented | Approach + find-home are building blocks | No route executor | Action: route executor — find place → choose next landmark → travel → verify → recover |
 | Find Alex | ⚪ Not implemented | Camera, person-class, sound direction exist | No search/confirm/approach loop | Action: scan-search behavior + identity confirmation (frame) + safe moving-target approach |
 | Patrol & report changes | ⚪ Not implemented | Recorder + map images exist | No revisit / change detection | Action: whole-house map + place revisits + change detection + report generation |
+
+## Path to 🟢 — concrete next steps for every non-green
+
+For each capability that is **not** proven-green, here is the concrete plan to get it there:
+**test steps** if it exists but is untested/flaky, **build steps** if it does not exist yet.
+
+| Capability (now) | Steps to reach 🟢 |
+|---|---|
+| Forward obstacle reflex 🟡 | **Test:** drive at a hard object and a soft/cluttered object; confirm it stops and log the stop distance for each. **Improve:** add a side/front clearance check from a `/scan` depth profile before each turn. Done when stops are reliable on both object types + clearance-checked turns. |
+| Real obstacle detection ⚪ | **Build:** (1) at each step, head-scan the depth profile (front + sides) and mark close returns as obstacles; (2) add detection hints (chair/couch legs) to that local map; (3) add side/rear awareness (ultrasonic is forward-only — head-scan or add a rear sensor); (4) gate motion on the map (refuse a turn into a blocked arc). **Test:** place furniture; verify it stops/reroutes instead of wedging. |
+| Verified move / stall detection 🟡 | **Fix:** make the stall signal the **gyro heading-delta** for turns (heading barely moves = stuck), keep ultrasonic-delta for forward/back — camera flow false-positives on leg-shuffle. **Test:** wedge the dog against a wall, command a turn, confirm it flags stuck + backs up within 1–2 batches. Record. |
+| Turn by visual motion (`turn_vision`) 🟡 | **Fix:** harden for low battery — lower turn speed (less peak current) and/or detect voltage sag and pause-retry. **Test:** command 90° and 180° at ~90 %, ~60 %, ~40 % rest charge; measure actual rotation on the external cam at each; record the table. Done when actual ≈ commanded across the range. |
+| Face a landmark (`face`) 🟠 | **Test:** on a charged pack (>60 % at rest), run `face book` and confirm it centers to `|cx|<0.15` within ~3 head-scan→turn iterations; record before/after frames. **If it won't converge:** use the head-bearing-delta as the turn feedback (turn until the head re-scan shows the landmark centered). |
+| Return to exact home **position** (`return_home`) 🔴 | **Build the lateral fix:** (a) record a richer home signature — bearings to **≥2 distinct landmarks**, not just the bookshelf; (b) implement **scan-matching**: try small lateral moves (turn-step-turn), keep the one that lowers the depth-profile error (hill-climb); **or** (c) run live SLAM during the return and servo to the recorded SLAM pose. **Test:** displace the dog 0.5–1 m, run return, verify final depth-profile error < ~20 cm. Record. |
+| Leave and return round-trip (`home_return`) 🔴 | **Steps:** (1) start from a full charge (it browns out below ~50 % rest on turn-heavy runs); (2) apply the `turn_vision` low-battery hardening above; (3) fix `navigate_return`'s old 8 s command timeout (use 70 s like `home_return`). **Test:** run `home_return` end-to-end; confirm it returns facing the bookshelf at home distance with no brownout. Record a clean round-trip. |
+| Persistent SLAM as a navigator 🟡 | **Fix the turn-tracking loss:** turn in small paused steps so SLAM keeps tracking, and re-anchor by recognizing a landmark after each turn. **Test:** drive a short loop; confirm SLAM stays in `state=2` (tracking) through turns and relocalizes on return. Then it can feed pose into return/route logic. |
+| Whole-house map ⚪ | **Build:** (1) a place-graph structure — nodes = named places, edges = "from X, face landmark Y, travel until Z"; (2) populate it by driving each place and recording its landmark signature (extend `record_home` to N places); (3) persist to `house_map.json` and reconcile with the SLAM atlas. **Test:** recognize which place the dog is in from a head-scan. |
+| Whole-house navigation ⚪ | **Build a route executor** that chains: localize (recognize current place) → pick the next landmark from the graph → `nav_approach` to it → verify arrival → recover on failure. **Test:** "go to kitchen" from home; verify it arrives via the landmark chain, recovering from any stall. |
+| Find Alex ⚪ | **Build:** (1) scan-search behavior (rotate + head-scan for the `person` class, optionally cue off sound direction); (2) identity confirmation — Claude checks a frame ("is this Alex?"); (3) safe approach with re-detection each step (moving target). **Test:** stand in the room; verify it finds, confirms, and approaches you, and never claims "found Alex" without a confirming frame. |
+| Patrol & report changes ⚪ | **Build (needs the whole-house map first):** revisit each place, capture its current signature/frame, compare to the stored one, flag what changed, generate a report. **Test:** move one object; verify the patrol flags exactly that change. |
 
 ## What The Dog Can Do Today
 
