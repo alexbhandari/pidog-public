@@ -12,23 +12,25 @@
 
 One ARCore app on the phone is the brain: it reads **pose + depth** straight from the ARCore SDK (the two things RTAB-Map and 3D Live Scanner each withhold), builds a persistent map, plans/avoids, and emits movement commands — first to a human stand-in, later to the PiDog.
 
-Blocks are **grouped by the phase that builds them**, tagged with **status** (✅/🔄/⬜/⚠️). 🧠 marks blocks that use a neural net; their yellow note gives the net's **inputs → outputs** and why it's needed.
+Blocks are **grouped by the phase that builds them** and tagged with **status** (✅/🔄/⬜/⚠️). Color = neural-net usage: **green = no NN** (classical geometry/search), **red = NN**. Yellow notes give each net's **inputs → outputs → why**. Note that **localization and mapping use no NN** — the *only* net in core sensing is the Depth API, and it's optional (skip it and the map is just sparse).
 
 ```mermaid
 flowchart TD
     CAM["📷 Camera + IMU<br/>✅ sensor input (always on)"]
 
     subgraph P1["Phase 1 — Unified ARCore app · ⬜"]
-        ARCORE["ARCore session (COM)<br/>⬜ not started<br/>🧠 uses Depth API neural net"]
-        MAP["Persistent occupancy /<br/>voxel map<br/>⬜ not started · no NN (geometric accumulation)"]
+        ARCORE["ARCore session (COM)<br/>⬜ not started"]
+        POSE["Localization · 6DoF pose (VIO)<br/>⬜ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift"]
+        DEPTH["Dense depth · ARCore Depth API<br/>⬜ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
+        MAP["Persistent occupancy / voxel map<br/>⬜ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
     end
 
     subgraph P4["Phase 4 — Perception (optional) · ⚠️"]
-        ML["🧠 ML Kit / MediaPipe / TFLite<br/>object detection + segmentation<br/>⚠️ decision needed"]
+        ML["ML Kit / MediaPipe / TFLite<br/>object detection + segmentation<br/>⚠️ decision needed · 🧠 NEURAL NET"]
     end
 
     subgraph P3["Phase 3 — Navigation · ⬜"]
-        PLAN["Route planning +<br/>obstacle avoidance<br/>⬜ not started · no NN (search + geometry)"]
+        PLAN["Route planning +<br/>obstacle avoidance<br/>⬜ · NO NN — search + geometry"]
         CMD["Commands: stop / forward /<br/>turn L / R / back<br/>⬜ not started"]
     end
 
@@ -43,8 +45,10 @@ flowchart TD
     end
 
     CAM --> ARCORE
-    ARCORE -->|"6DoF pose"| MAP
-    ARCORE -->|"Depth API — metric depth"| MAP
+    ARCORE --> POSE
+    ARCORE --> DEPTH
+    POSE -->|"where am I"| MAP
+    DEPTH -->|"what's around (metric)"| MAP
     ARCORE -.->|"frames"| ML
     ML -.->|"semantic labels"| MAP
     MAP --> PLAN
@@ -54,13 +58,17 @@ flowchart TD
     CMD -->|"USB"| PI
     PI --> DOG
 
-    NN1["🧠 Neural net — ARCore Depth API<br/>IN: live camera frames + device motion (VIO)<br/>OUT: per-pixel metric depth map + confidence<br/>WHY: S22 has no LiDAR, so a CNN infers depth<br/>from motion parallax → metric obstacle distances"]
-    NN2["🧠 Neural net — ML Kit / MediaPipe / TFLite<br/>IN: RGB camera frames<br/>OUT: object boxes + class labels (detection),<br/>and/or per-pixel class masks (segmentation)<br/>WHY: tells the robot WHAT things are — for<br/>finding, interacting, patrolling. ARCore can't."]
-    ARCORE -.-> NN1
+    NN1["🧠 Neural net — ARCore Depth API (the ONLY NN in core sensing)<br/>IN: live camera frames + device motion (VIO pose)<br/>OUT: per-pixel metric depth map + confidence<br/>WHY: S22 has no LiDAR, so a CNN infers depth from motion<br/>parallax → dense metric obstacles. Localization/mapping don't use it."]
+    NN2["🧠 Neural net — ML Kit / MediaPipe / TFLite<br/>IN: RGB camera frames<br/>OUT: object boxes + class labels (detection),<br/>and/or per-pixel class masks (segmentation)<br/>WHY: tells the robot WHAT things are — finding,<br/>interacting, patrolling. ARCore can't."]
+    DEPTH -.-> NN1
     ML -.-> NN2
 
     classDef note fill:#ffd,stroke:#cc0,color:#000;
+    classDef nonn fill:#d6f5d6,stroke:#3a3,color:#000;
+    classDef nn fill:#f8d2d2,stroke:#c33,color:#000;
     class NN1,NN2 note;
+    class POSE,MAP,PLAN nonn;
+    class DEPTH,ML nn;
 ```
 
 ---
