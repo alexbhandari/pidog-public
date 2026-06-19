@@ -12,19 +12,55 @@
 
 One ARCore app on the phone is the brain: it reads **pose + depth** straight from the ARCore SDK (the two things RTAB-Map and 3D Live Scanner each withhold), builds a persistent map, plans/avoids, and emits movement commands — first to a human stand-in, later to the PiDog.
 
+Blocks are **grouped by the phase that builds them**, tagged with **status** (✅/🔄/⬜/⚠️). 🧠 marks blocks that use a neural net; their yellow note gives the net's **inputs → outputs** and why it's needed.
+
 ```mermaid
 flowchart TD
-    CAM["Camera + IMU"] --> ARCORE["ARCore session<br/>(Concurrent Odometry &amp; Mapping)"]
-    ARCORE -->|"6DoF pose"| MAP["Persistent occupancy /<br/>voxel map"]
+    CAM["📷 Camera + IMU<br/>✅ sensor input (always on)"]
+
+    subgraph P1["Phase 1 — Unified ARCore app · ⬜"]
+        ARCORE["ARCore session (COM)<br/>⬜ not started<br/>🧠 uses Depth API neural net"]
+        MAP["Persistent occupancy /<br/>voxel map<br/>⬜ not started · no NN (geometric accumulation)"]
+    end
+
+    subgraph P4["Phase 4 — Perception (optional) · ⚠️"]
+        ML["🧠 ML Kit / MediaPipe / TFLite<br/>object detection + segmentation<br/>⚠️ decision needed"]
+    end
+
+    subgraph P3["Phase 3 — Navigation · ⬜"]
+        PLAN["Route planning +<br/>obstacle avoidance<br/>⬜ not started · no NN (search + geometry)"]
+        CMD["Commands: stop / forward /<br/>turn L / R / back<br/>⬜ not started"]
+    end
+
+    subgraph P5["Phase 5 — Human-in-loop test · ⬜"]
+        VIEW["FSD-style map view<br/>+ collision log<br/>⬜ not started"]
+        HUMAN["🧍 Human stand-in<br/>⬜ not started"]
+    end
+
+    subgraph P6["Phase 6 — Robot · ⬜"]
+        PI["Raspberry Pi<br/>⬜ not started"]
+        DOG["🐕 PiDog motors<br/>⬜ not started"]
+    end
+
+    CAM --> ARCORE
+    ARCORE -->|"6DoF pose"| MAP
     ARCORE -->|"Depth API — metric depth"| MAP
-    ARCORE -.->|"frames"| ML["ML Kit / MediaPipe / TFLite<br/>detection + segmentation<br/>(Phase 4, optional)"]
+    ARCORE -.->|"frames"| ML
     ML -.->|"semantic labels"| MAP
-    MAP --> PLAN["Route planning +<br/>obstacle avoidance"]
-    PLAN --> CMD["Commands:<br/>stop / forward / turn L / R / back"]
-    CMD --> VIEW["FSD-style map view<br/>+ collision log (Phase 5)"]
-    VIEW -.->|"human follows"| HUMAN["Human stand-in"]
-    CMD -->|"USB (Phase 6)"| PI["Raspberry Pi"]
-    PI --> DOG["PiDog motors"]
+    MAP --> PLAN
+    PLAN --> CMD
+    CMD --> VIEW
+    VIEW -.->|"human follows"| HUMAN
+    CMD -->|"USB"| PI
+    PI --> DOG
+
+    NN1["🧠 Neural net — ARCore Depth API<br/>IN: live camera frames + device motion (VIO)<br/>OUT: per-pixel metric depth map + confidence<br/>WHY: S22 has no LiDAR, so a CNN infers depth<br/>from motion parallax → metric obstacle distances"]
+    NN2["🧠 Neural net — ML Kit / MediaPipe / TFLite<br/>IN: RGB camera frames<br/>OUT: object boxes + class labels (detection),<br/>and/or per-pixel class masks (segmentation)<br/>WHY: tells the robot WHAT things are — for<br/>finding, interacting, patrolling. ARCore can't."]
+    ARCORE -.-> NN1
+    ML -.-> NN2
+
+    classDef note fill:#ffd,stroke:#cc0,color:#000;
+    class NN1,NN2 note;
 ```
 
 ---
