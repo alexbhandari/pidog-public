@@ -8,8 +8,45 @@
 
 ---
 
+## Target system architecture
+
+One ARCore app on the phone is the brain: it reads **pose + depth** straight from the ARCore SDK (the two things RTAB-Map and 3D Live Scanner each withhold), builds a persistent map, plans/avoids, and emits movement commands — first to a human stand-in, later to the PiDog.
+
+```mermaid
+flowchart TD
+    CAM["Camera + IMU"] --> ARCORE["ARCore session<br/>(Concurrent Odometry &amp; Mapping)"]
+    ARCORE -->|"6DoF pose"| MAP["Persistent occupancy /<br/>voxel map"]
+    ARCORE -->|"Depth API — metric depth"| MAP
+    ARCORE -.->|"frames"| ML["ML Kit / MediaPipe / TFLite<br/>detection + segmentation<br/>(Phase 4, optional)"]
+    ML -.->|"semantic labels"| MAP
+    MAP --> PLAN["Route planning +<br/>obstacle avoidance"]
+    PLAN --> CMD["Commands:<br/>stop / forward / turn L / R / back"]
+    CMD --> VIEW["FSD-style map view<br/>+ collision log (Phase 5)"]
+    VIEW -.->|"human follows"| HUMAN["Human stand-in"]
+    CMD -->|"USB (Phase 6)"| PI["Raspberry Pi"]
+    PI --> DOG["PiDog motors"]
+```
+
+---
+
 ## Status legend
 ✅ done · 🔄 in progress · ⬜ not started · ⚠️ blocked/decision needed
+
+---
+
+## Roadmap at a glance
+
+```mermaid
+flowchart LR
+    P0["Phase 0<br/>Sensing validation"]:::done --> P1["Phase 1<br/>Unified ARCore app<br/>pose + depth + map"]
+    P1 --> P2["Phase 2<br/>On-phone test<br/>+ visualize"]
+    P2 --> P3["Phase 3<br/>Planning +<br/>obstacle avoidance"]
+    P3 --> P5["Phase 5<br/>FSD-style nav test<br/>human-in-loop"]
+    P5 --> P6["Phase 6<br/>Deploy to PiDog"]
+    P3 -.-> P4{"Phase 4<br/>Add classification<br/>/ segmentation?"}
+    P4 -.-> P5
+    classDef done fill:#bbf,stroke:#27a,color:#000;
+```
 
 ---
 
