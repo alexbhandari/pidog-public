@@ -129,9 +129,11 @@ flowchart LR
 
 ---
 
-## Phase 1 — Unified capture app (⬜)
+## Phase 1 — Unified capture app (🔄)
 
-Build one ARCore Android app (native Kotlin) that produces, in a single session, **all** the data the robot needs:
+📄 **Build details: [PHASE1.md](PHASE1.md)** — starting point (fork Google `raw_depth_java`), per-repo sourcing, data-to-Mac flow, loop-closure measurement.
+
+Build one ARCore Android app (Java-first, forked from the `raw_depth_java` sample) that produces, in a single session, **all** the data the robot needs:
 - [ ] ARCore session: 6DoF **pose** stream (localization)
 - [ ] **Depth API**: per-frame metric depth (obstacles + depth)
 - [ ] Accumulate depth+pose into a **persistent occupancy/voxel map** (the `map_voxels` idea from the Mac prototype `runmap.py`, now on correct metric data)
