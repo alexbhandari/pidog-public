@@ -20,7 +20,7 @@ flowchart TD
 
     subgraph P1["Phase 1 — Unified ARCore app · ✅"]
         ARCORE["ARCore session (COM)<br/>✅ done"]
-        POSE["Localization · 6DoF pose (VIO)<br/>✅ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift (0.22% drift)"]
+        POSE["Localization · 6DoF pose (VIO)<br/>✅ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift (0.22 pct)"]
         DEPTH["Dense depth · ARCore Depth API<br/>✅ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
         MAP["Persistent occupancy / voxel map<br/>✅ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
     end
