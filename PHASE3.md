@@ -17,15 +17,21 @@
 - **Reactive layer** — live depth in front → detect a *new* obstacle not on the map → stop / replan.
 - **FSD-style map view** — top-down render: occupancy grid + ego pose + frontiers + selected goal + planned path + waypoints + current instruction.
 
-## Autonomous exploration algorithm (frontier-based)
-Classic frontier exploration (Yamauchi), run in a loop:
-1. **Update the occupancy grid** from the live voxel map (free / occupied / unknown).
-2. **Detect frontiers** — `free` cells adjacent to ≥1 `unknown` cell; cluster contiguous frontier cells into regions; take each region's centroid.
-3. **Select target** — the **nearest reachable** frontier centroid (by A\* path distance). *(Later: utility = info-gain (frontier size) − travel cost.)*
-4. **Plan** an A\* path to it over `free` cells.
-5. **Move there** via the mover interface; new area gets observed → the grid fills → frontiers shrink/shift.
-6. **Re-evaluate** on arrival (or when the map changes a lot): re-detect, re-select, replan.
-7. **Done** when no reachable frontiers remain → space fully mapped.
+## Autonomous exploration — exactly what happens, from the robot powering on
+
+Think of the floor as a grid of cells, each tagged one of three ways as the robot sees it: **OPEN** (seen, clear to walk), **BLOCKED** (seen, an obstacle/wall there), or **UNKNOWN** (not seen yet). The robot's job is to turn all the reachable UNKNOWN into OPEN or BLOCKED — i.e., see everywhere it can go.
+
+1. **Power on.** Almost the whole grid is UNKNOWN; the robot has only seen the small patch right in front of it.
+2. **Look + fill in.** As the camera sees the floor and walls ahead, those cells flip from UNKNOWN to OPEN (clear) or BLOCKED (obstacle). The seen region grows outward from the robot.
+3. **Find the edges of what it has seen.** Look for cells that are OPEN but sit right next to an UNKNOWN cell. Those edges are the interesting spots — *if the robot goes there, it'll see new territory.* (The technical name for such an edge is a "frontier"; that's all the word means.)
+4. **Group the edges.** Usually there are several edge stretches (an un-entered doorway, a hallway trailing off, a gap behind furniture). The robot groups each contiguous stretch into one target and marks the middle of it as a "go-here" point.
+5. **Pick which edge to go to = the nearest one it can actually walk to.** For each candidate, it works out the **real walking distance** — the length of a route that stays on OPEN cells and goes *around* walls, not a straight line through them — and picks the **closest** such reachable target. (Closest-first keeps it efficient and avoids zig-zagging across the house.) *"A\* path distance" was just jargon for "shortest real walking route avoiding obstacles."*
+6. **Plan the route + start walking.** It computes the step-by-step route over OPEN cells to that point and starts issuing move commands (turn / forward / stop). During the test that's the on-screen banner driving you; on the robot it's the same commands to the motors.
+7. **The edge gets "eaten away."** As it walks toward that spot, the camera keeps filling in cells, so that UNKNOWN region shrinks and new edges appear further out.
+8. **Arrive → re-check → repeat.** When it reaches the spot (or the map has changed a lot), it redoes steps 3–6: where are the edges now, which is the nearest reachable one, go.
+9. **Stop when there's nothing left to see.** Eventually no OPEN-next-to-UNKNOWN edges remain that it can reach — meaning everywhere reachable has been seen. It announces **"exploration complete."** The space is fully mapped.
+
+*(In one line of jargon for reference: greedy nearest-frontier exploration with A\* path planning. A smarter target-picker later = "prefer big unexplored areas, discount far ones" — but nearest-first is the right v1.)*
 
 ## Driving the human tester (= how the app will move the robot)
 The phone's camera is the sensor; during the test **I am the actuator**, and the app conveys movement the same way it will to the motors:
