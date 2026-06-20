@@ -67,3 +67,21 @@ Real loop closure (place recognition + pose-graph optimization) is **not** a qui
 - Open the app module in **Android Studio**; ARCore dependency via Gradle (`com.google.ar:core`).
 - Deploy to S22 over the existing **wireless adb** link; grant Camera permission.
 - Pull outputs: `adb pull <app-files-dir>/… scans/phase1/`.
+- Convenience: `./phone_brain/dev.sh build|install|launch|pull`.
+
+## Build environment (required on this Mac — CLI, no Android Studio)
+
+The toolchain was installed by direct download (no Homebrew/Xcode), so a few one-time steps are **required** or the build fails:
+- **`JAVA_HOME` must point to `tools/jdk`** (Temurin 17). With the system Java 8, AGP 8.4 fails dependency resolution (`compatible with Java 8 … needed Java 11`).
+- **Ad-hoc code-sign the native binaries** or macOS Gatekeeper SIGKILLs them when Gradle forks them (`Failed to exec spawn helper: signal 9` / `AAPT2 Daemon startup failed`):
+  ```bash
+  codesign --force --sign - tools/jdk/Contents/Home/lib/jspawnhelper
+  find ~/.gradle tools/android-sdk -name aapt2 -type f -exec codesign --force --sign - {} \;
+  ```
+- `dev.sh` sets `JAVA_HOME`/`ANDROID_HOME` for you; re-run the `codesign` lines only if the JDK/SDK is reinstalled.
+
+> Process note: always stream build output to a tailable log (`> build.log 2>&1`) and watch it live — buffered output once made normal builds look like hangs.
+
+## Result (Phase 1 done)
+
+Closed-loop walk on the S22: **35.5 m path, 7.8 cm end-to-start gap, 0.22 % drift**, 89k-voxel dense map. Conclusion: **ARCore VIO is accurate enough at this scale → no loop closure needed.**

@@ -129,17 +129,28 @@ flowchart LR
 
 ---
 
-## Phase 1 — Unified capture app (🔄)
+## Phase 1 — Unified capture app (✅ DONE, 2026-06-19)
 
-📄 **Build details: [PHASE1.md](PHASE1.md)** — starting point (fork Google `raw_depth_java`), per-repo sourcing, data-to-Mac flow, loop-closure measurement.
+📄 **Build details: [PHASE1.md](PHASE1.md)** — fork source, per-repo sourcing, data-to-Mac flow, build environment.
 
-Build one ARCore Android app (Java-first, forked from the `raw_depth_java` sample) that produces, in a single session, **all** the data the robot needs:
-- [ ] ARCore session: 6DoF **pose** stream (localization)
-- [ ] **Depth API**: per-frame metric depth (obstacles + depth)
-- [ ] Accumulate depth+pose into a **persistent occupancy/voxel map** (the `map_voxels` idea from the Mac prototype `runmap.py`, now on correct metric data)
-- [ ] Save/export: map (voxel grid + cloud), full **pose trajectory**, per-frame depth — in formats we can pull and inspect (PLY/JSON)
-- [ ] Reference implementations to mine: Google `arcore-android-sdk` `raw_depth` sample, `nadiawangberg/phone-slam` (raw-depth point cloud + confidence filtering)
-- **Decision to confirm:** lightweight own-mapping now vs. linking `librtabmap` for loop closure from the start. *Lean: own-mapping first.*
+Built `phone_brain/` (Java, forked from `raw_depth_java`), running on the S22:
+- [x] ARCore session: 6DoF **pose** stream (localization)
+- [x] **Raw Depth API**: per-frame metric depth, confidence-filtered
+- [x] `MapAccumulator`: depth+pose → **world-frame voxel map** (5 cm)
+- [x] `PoseLogger` + `PlyExporter`: save `trajectory.json` + `map.ply`
+- [x] **START/STOP recording** (clean origin) + on-screen save confirmation
+- [x] Mac-side `tools/analyze_trajectory.py`: path length + drift + plot
+
+### Result (closed-loop walk)
+| metric | value |
+|---|---|
+| path length | 35.5 m |
+| end-to-start gap | **7.8 cm** |
+| **drift** | **0.22 %** |
+| map | 89k voxels, dense room core |
+
+### ⚠️ Decision resolved: **no loop closure needed**
+0.22 % drift is far under the 1–2 % threshold → raw ARCore VIO is accurate enough at room/house scale. We build on **plain ARCore (our own app)** and do **not** integrate RTAB-Map/`librtabmap`. (Re-evaluate only if larger multi-room loops show real drift.)
 
 ## Phase 2 — On-phone test + visualization (⬜)
 
@@ -188,3 +199,4 @@ Turn it into a navigation app the human operator follows as the "dog."
 
 ## Changelog
 - **2026-06-19:** Created plan. Completed Phase 0 (sensing validation) — see results above. Resolved core architecture decision: build our own ARCore app reading pose + depth, since neither RTAB-Map (no saved depth/obstacles) nor 3D Live Scanner (no accessible poses) provides the full set.
+- **2026-06-19:** Completed Phase 1 — `phone_brain/` ARCore capture app built + running on the S22 (START/STOP recording, voxel map + trajectory export, on-screen save confirm). Closed-loop walk measured **0.22 % drift** → resolved that **loop closure is not needed**; staying on plain ARCore (no RTAB-Map).
