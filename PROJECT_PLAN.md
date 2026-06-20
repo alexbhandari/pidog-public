@@ -18,11 +18,11 @@ Blocks are **grouped by the phase that builds them** and tagged with **status** 
 flowchart TD
     CAM["📷 Camera + IMU<br/>✅ sensor input (always on)"]
 
-    subgraph P1["Phase 1 — Unified ARCore app · ⬜"]
-        ARCORE["ARCore session (COM)<br/>⬜ not started"]
-        POSE["Localization · 6DoF pose (VIO)<br/>⬜ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift"]
-        DEPTH["Dense depth · ARCore Depth API<br/>⬜ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
-        MAP["Persistent occupancy / voxel map<br/>⬜ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
+    subgraph P1["Phase 1 — Unified ARCore app · ✅"]
+        ARCORE["ARCore session (COM)<br/>✅ done"]
+        POSE["Localization · 6DoF pose (VIO)<br/>✅ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift (0.22% drift)"]
+        DEPTH["Dense depth · ARCore Depth API<br/>✅ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
+        MAP["Persistent occupancy / voxel map<br/>✅ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
     end
 
     subgraph P4["Phase 4 — Perception (optional) · ⚠️"]
@@ -82,8 +82,8 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    P0["Phase 0<br/>Sensing validation"]:::done --> P1["Phase 1<br/>Unified ARCore app<br/>pose + depth + map"]
-    P1 --> P2["Phase 2<br/>On-phone test<br/>+ visualize"]
+    P0["Phase 0<br/>Sensing validation"]:::done --> P1["Phase 1<br/>Unified ARCore app<br/>pose + depth + map"]:::done
+    P1 --> P2["Phase 2<br/>On-phone test<br/>+ visualize"]:::done
     P2 --> P3["Phase 3<br/>Planning +<br/>obstacle avoidance"]
     P3 --> P5["Phase 5<br/>FSD-style nav test<br/>human-in-loop"]
     P5 --> P6["Phase 6<br/>Deploy to PiDog"]
@@ -152,12 +152,13 @@ Built `phone_brain/` (Java, forked from `raw_depth_java`), running on the S22:
 ### ⚠️ Decision resolved: **no loop closure needed**
 0.22 % drift is far under the 1–2 % threshold → raw ARCore VIO is accurate enough at room/house scale. We build on **plain ARCore (our own app)** and do **not** integrate RTAB-Map/`librtabmap`. (Re-evaluate only if larger multi-room loops show real drift.)
 
-## Phase 2 — On-phone test + visualization (⬜)
+## Phase 2 — On-phone test + visualization (✅ DONE, 2026-06-19)
 
-Confirm Phase 1 produces correct localization, obstacles, and depth by **walking the same route** used in Phase 0.
-- [ ] Live on-phone view of the map building + current pose
-- [ ] Pull data to Mac; visualize/verify trajectory, occupancy map, depth (reuse `tools/` viz)
-- [ ] Acceptance: map is metric & consistent; obstacles (chair legs, table edges, walls) clearly present; pose stable over the loop
+Confirmed Phase 1 produces correct localization, depth, and map via a closed-loop walk on the S22.
+- [x] Live on-phone view of the map building + current pose (+ live REC/voxel/pose counter)
+- [x] Pull data to Mac; visualize/verify trajectory + voxel map (`tools/analyze_trajectory.py`, PLY viz)
+- [x] Acceptance met: map metric & dense (89k voxels, recognizable furniture/walls); pose stable over the loop (**0.22 % drift**)
+- *Open polish (non-blocking):* outlier filtering on the cloud; per-frame depth dump for any future offline use.
 
 ## Phase 3 — Route planning + obstacle avoidance (⬜)
 
@@ -192,10 +193,12 @@ Turn it into a navigation app the human operator follows as the "dog."
 ---
 
 ## Open decisions tracker
-- ⚠️ **P1:** own lightweight mapping vs. `librtabmap` integration (lean: own first)
-- ⚠️ **P3:** when/whether to add real loop closure (trigger: measured house-scale drift)
-- ⚠️ **P4:** classification scope + off-the-shelf vs. trained models
-- **Control location:** phone-brain vs. phone-maps/Pi-plans split (revisit at Phase 6)
+- ✅ **P1 (resolved):** own lightweight mapping — built `phone_brain` on plain ARCore; no `librtabmap`.
+- ✅ **P3 loop closure (resolved):** not needed — 0.22 % drift on a 35 m loop is well under threshold.
+- ⚠️ **P3 scope:** single-session navigate-while-mapping vs. cross-session relocalization on a stored map (needs persistent/Cloud Anchors). *Lean: single-session v1.*
+- ⚠️ **P3 + P5 coupling:** build the planner with a minimal FSD-style command view so it's testable.
+- ⚠️ **P4:** classification scope + off-the-shelf vs. trained models.
+- **Control location:** phone-brain vs. phone-maps/Pi-plans split (revisit at Phase 6).
 
 ## Changelog
 - **2026-06-19:** Created plan. Completed Phase 0 (sensing validation) — see results above. Resolved core architecture decision: build our own ARCore app reading pose + depth, since neither RTAB-Map (no saved depth/obstacles) nor 3D Live Scanner (no accessible poses) provides the full set.
