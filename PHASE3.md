@@ -6,32 +6,52 @@
 - **v1 = single-session**: map and navigate in one run (no app restart). Cross-session relocalization is **deferred to v2** — see the Relocalization section below.
 - **No loop closure** — 0.22 % drift already validated.
 - **Phase 3 + a minimal slice of Phase 5 are built together** — you can't test a planner without command output + a view to follow, so they ship as one loop.
-- **"Autonomous explore" = free-roam mapping.** You walk around naturally; the map builds + autosaves. The app does **not** direct you during mapping (frontier-style "go map that gap" is a *robot* behavior, deferred). The autonomy we build/test is **navigation back**.
+- **Autonomous exploration is a real robot capability** (corrected): the dog **decides where to go to map unknown space** (frontier-based) and moves itself there. We test it with the **human as the dog's legs** — the app issues the *same* move instructions to me that it will later issue to the robot's motors. (It is **not** free-roam-by-hand.)
 
 ## New components (on top of `phone_brain`)
 - **2D occupancy grid** — project the 3D voxel map onto the floor plane → `free / occupied / unknown` cells (a robot plans in 2D).
-- **A\* planner** — shortest path on the grid from current pose to a goal.
+- **Frontier detector** — find `free` cells bordering `unknown` (the edge of the explored region = candidate places to go map next).
+- **Goal selector** — *explore mode:* auto-pick the best frontier; *go-to mode:* a user goal (return / waypoint).
+- **A\* planner** — shortest path over `free` cells from current pose to the selected goal.
+- **Mover interface** — turns the path into **one move instruction at a time** (banner + AR heading arrow), auto-advanced from live pose. **Same output whether the mover is the human tester or the robot's motors.**
 - **Reactive layer** — live depth in front → detect a *new* obstacle not on the map → stop / replan.
-- **Command generator** — path → `stop / forward / turn L / turn R / back up`.
-- **FSD-style map view** — top-down render: occupancy grid + ego pose + planned path + waypoints + current command.
-- **Waypoint store** + **RETURN chooser**.
+- **FSD-style map view** — top-down render: occupancy grid + ego pose + frontiers + selected goal + planned path + waypoints + current instruction.
+
+## Autonomous exploration algorithm (frontier-based)
+Classic frontier exploration (Yamauchi), run in a loop:
+1. **Update the occupancy grid** from the live voxel map (free / occupied / unknown).
+2. **Detect frontiers** — `free` cells adjacent to ≥1 `unknown` cell; cluster contiguous frontier cells into regions; take each region's centroid.
+3. **Select target** — the **nearest reachable** frontier centroid (by A\* path distance). *(Later: utility = info-gain (frontier size) − travel cost.)*
+4. **Plan** an A\* path to it over `free` cells.
+5. **Move there** via the mover interface; new area gets observed → the grid fills → frontiers shrink/shift.
+6. **Re-evaluate** on arrival (or when the map changes a lot): re-detect, re-select, replan.
+7. **Done** when no reachable frontiers remain → space fully mapped.
+
+## Driving the human tester (= how the app will move the robot)
+The phone's camera is the sensor; during the test **I am the actuator**, and the app conveys movement the same way it will to the motors:
+- **Instruction banner — one command at a time:** large arrow + text — `TURN LEFT ~45°`, `WALK FORWARD`, `STOP`, `PAN PHONE TO SCAN` (fill in depth), `EXPLORATION COMPLETE`. The app watches my live pose and **auto-advances** to the next instruction once I comply.
+- **AR heading arrow** on the live camera pointing toward the next path waypoint — intuitive "go this way."
+- **FSD map view** for context: my pose, the target frontier, the planned path.
+- Everything **logged** (pose, instruction issued, compliance, collisions) for Mac-side analysis. On the robot, the *same* command stream drives the motors instead of the banner.
 
 ## UX / buttons
 - Existing: **START/STOP** (record + clean origin), **SAVE**.
 - New:
+  - **EXPLORE** — start/stop autonomous exploration (app drives me to map the area).
   - **SET WAYPOINT** — drop a labeled waypoint (WP1, WP2…) at the current pose.
-  - **RETURN** — chooser: *Start* or a saved waypoint → plan best path → drive turn-by-turn.
+  - **RETURN** — chooser: *Start* or a saved waypoint → plan best path → drive turn-by-turn (go-to mode).
   - **COLLISION** — operator taps when they bump something (logs pose + time).
 
 ## Increment breakdown (each = a small, independently-testable APK)
-1. **2D occupancy map view** — voxels → top-down grid, rendered live with ego pose. *Test: walk, watch free/occupied/unknown + pose build.* (FSD-view foundation; de-risks everything.)
+1. **2D occupancy grid + FSD map view** — voxels → top-down `free/occupied/unknown` + ego pose, live. *Test: walk, watch the grid + pose build.* (Foundation for everything.)
 2. **Continual autosave** — autosave map + trajectory every few seconds while recording.
-3. **Waypoints** — SET WAYPOINT + render them on the map.
-4. **Path planning (draw only)** — RETURN → pick goal → A\* path drawn on the grid. *Test: path looks sane / routes around obstacles.*
-5. **Turn-by-turn guidance** — path → stop/fwd/turn commands shown one at a time. *Test: follow them to the goal as the "dog".*
+3. **Mover interface** — instruction banner + AR heading arrow, driven by a **manually-tapped goal** first. *Test: app says turn/walk toward a tapped point; I follow; it auto-advances from my pose.*
+4. **A\* path planning** — plan over `free` cells to the tapped goal, drawn on the map + driven via the mover. *Test: routes around obstacles; I reach the goal.*
+5. **Autonomous exploration** — frontier detect → select nearest → plan → drive → repeat until done. *Test: the app walks me around to fully map a room **on its own**.* ← the capability you flagged.
 6. **Reactive avoidance** — live depth catches a new obstacle → stop/replan, + COLLISION button. *Test: drop a box in the path, see it stop/reroute.*
+7. **Go-to mode** — SET WAYPOINT + RETURN (Start / waypoint goal) reusing the same planner + mover. *Test: navigate back to a chosen point.*
 
-→ Start with **Increment 1**.
+→ Start with **Increment 1**; exploration (Inc 5) falls out once the grid + mover + planner exist.
 
 ## How we test (human-as-dog)
 Operator holds the phone, follows the on-screen commands, taps **COLLISION** on any bump. The app logs poses / commands / events; we pull and analyze on the Mac (reuse `tools/`). Acceptance: reaches the goal following commands, replans around a new obstacle, collisions logged, the path on the map view matches reality.
