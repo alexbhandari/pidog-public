@@ -18,11 +18,11 @@ Blocks are **grouped by the phase that builds them** and tagged with **status** 
 flowchart TD
     CAM["📷 Camera + IMU<br/>✅ sensor input (always on)"]
 
-    subgraph P1["Phase 1 — Unified ARCore app · ⬜"]
-        ARCORE["ARCore session (COM)<br/>⬜ not started"]
-        POSE["Localization · 6DoF pose (VIO)<br/>⬜ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift"]
-        DEPTH["Dense depth · ARCore Depth API<br/>⬜ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
-        MAP["Persistent occupancy / voxel map<br/>⬜ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
+    subgraph P1["Phase 1 — Unified ARCore app · ✅"]
+        ARCORE["ARCore session (COM)<br/>✅ done"]
+        POSE["Localization · 6DoF pose (VIO)<br/>✅ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift"]
+        DEPTH["Dense depth · ARCore Depth API<br/>✅ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
+        MAP["Persistent occupancy / voxel map<br/>✅ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
     end
 
     subgraph P4["Phase 4 — Perception (optional) · ⚠️"]
@@ -82,8 +82,8 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    P0["Phase 0<br/>Sensing validation"]:::done --> P1["Phase 1<br/>Unified ARCore app<br/>pose + depth + map"]
-    P1 --> P2["Phase 2<br/>On-phone test<br/>+ visualize"]
+    P0["Phase 0<br/>Sensing validation"]:::done --> P1["Phase 1<br/>Unified ARCore app<br/>pose + depth + map"]:::done
+    P1 --> P2["Phase 2<br/>On-phone test<br/>+ visualize"]:::done
     P2 --> P3["Phase 3<br/>Planning +<br/>obstacle avoidance"]
     P3 --> P5["Phase 5<br/>FSD-style nav test<br/>human-in-loop"]
     P5 --> P6["Phase 6<br/>Deploy to PiDog"]
