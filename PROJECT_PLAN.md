@@ -12,64 +12,67 @@
 
 One ARCore app on the phone is the brain: it reads **pose + depth** straight from the ARCore SDK (the two things RTAB-Map and 3D Live Scanner each withhold), builds a persistent map, plans/avoids, and emits movement commands — first to a human stand-in, later to the PiDog.
 
-Blocks are **grouped by the phase that builds them** and tagged with **status** (✅/🔄/⬜/⚠️). Color = neural-net usage: **green = no NN** (classical geometry/search), **red = NN**. Yellow notes give each net's **inputs → outputs → why**. Note that **localization and mapping use no NN** — the *only* net in core sensing is the Depth API, and it's optional (skip it and the map is just sparse).
+Blocks are **grouped by the phase that builds them**; **node color = status** (green = done · gray = not started · amber = decision/optional). **(NN)** marks a neural-net block. Details + the neural-net inputs/outputs are listed under the diagram.
 
 ```mermaid
 flowchart TD
-    CAM["📷 Camera + IMU<br/>✅ sensor input (always on)"]
+    CAM["Camera + IMU"]
 
-    subgraph P1["Phase 1 — Unified ARCore app · ✅"]
-        ARCORE["ARCore session (COM)<br/>✅ done"]
-        POSE["Localization · 6DoF pose (VIO)<br/>✅ · NO NN — classical visual-inertial<br/>odometry; camera corrects IMU drift (0.22 pct)"]
-        DEPTH["Dense depth · ARCore Depth API<br/>✅ · 🧠 NEURAL NET (depth-from-motion)<br/>optional — skip = sparse map, no NN"]
-        MAP["Persistent occupancy / voxel map<br/>✅ · NO NN — geometric accumulation<br/>(fuses pose + depth into a world map)"]
+    subgraph P1["Phase 1 — Capture app (DONE)"]
+        ARCORE["ARCore session"]
+        POSE["Localization — pose (VIO)"]
+        DEPTH["Dense depth — Depth API (NN)"]
+        MAP["Occupancy / voxel map"]
     end
 
-    subgraph P4["Phase 4 — Perception (optional) · ⚠️"]
-        ML["ML Kit / MediaPipe / TFLite<br/>object detection + segmentation<br/>⚠️ decision needed · 🧠 NEURAL NET"]
+    subgraph P4["Phase 4 — Perception (DECISION)"]
+        ML["ML Kit / TFLite (NN)"]
     end
 
-    subgraph P3["Phase 3 — Navigation · ⬜"]
-        PLAN["Route planning +<br/>obstacle avoidance<br/>⬜ · NO NN — search + geometry"]
-        CMD["Commands: stop / forward /<br/>turn L / R / back<br/>⬜ not started"]
+    subgraph P3["Phase 3 — Navigation (TODO)"]
+        PLAN["Planning + obstacle avoidance"]
+        CMD["Move commands"]
     end
 
-    subgraph P5["Phase 5 — Human-in-loop test · ⬜"]
-        VIEW["FSD-style map view<br/>+ collision log<br/>⬜ not started"]
-        HUMAN["🧍 Human stand-in<br/>⬜ not started"]
+    subgraph P5["Phase 5 — Human test (TODO)"]
+        VIEW["FSD map view + collision log"]
+        HUMAN["Human stand-in"]
     end
 
-    subgraph P6["Phase 6 — Robot · ⬜"]
-        PI["Raspberry Pi<br/>⬜ not started"]
-        DOG["🐕 PiDog motors<br/>⬜ not started"]
+    subgraph P6["Phase 6 — Robot (TODO)"]
+        PI["Raspberry Pi"]
+        DOG["PiDog motors"]
     end
 
     CAM --> ARCORE
     ARCORE --> POSE
     ARCORE --> DEPTH
-    POSE -->|"where am I"| MAP
-    DEPTH -->|"what's around (metric)"| MAP
-    ARCORE -.->|"frames"| ML
-    ML -.->|"semantic labels"| MAP
+    POSE --> MAP
+    DEPTH --> MAP
+    ARCORE -.-> ML
+    ML -.-> MAP
     MAP --> PLAN
     PLAN --> CMD
     CMD --> VIEW
-    VIEW -.->|"human follows"| HUMAN
-    CMD -->|"USB"| PI
+    VIEW -.-> HUMAN
+    CMD --> PI
     PI --> DOG
 
-    NN1["🧠 Neural net — ARCore Depth API (the ONLY NN in core sensing)<br/>IN: live camera frames + device motion (VIO pose)<br/>OUT: per-pixel metric depth map + confidence<br/>WHY: S22 has no LiDAR, so a CNN infers depth from motion<br/>parallax → dense metric obstacles. Localization/mapping don't use it."]
-    NN2["🧠 Neural net — ML Kit / MediaPipe / TFLite<br/>IN: RGB camera frames<br/>OUT: object boxes + class labels (detection),<br/>and/or per-pixel class masks (segmentation)<br/>WHY: tells the robot WHAT things are — finding,<br/>interacting, patrolling. ARCore can't."]
-    DEPTH -.-> NN1
-    ML -.-> NN2
-
-    classDef note fill:#ffd,stroke:#cc0,color:#000;
-    classDef nonn fill:#d6f5d6,stroke:#3a3,color:#000;
-    classDef nn fill:#f8d2d2,stroke:#c33,color:#000;
-    class NN1,NN2 note;
-    class POSE,MAP,PLAN nonn;
-    class DEPTH,ML nn;
+    classDef done fill:#bdf5c8,stroke:#229922,color:#000;
+    classDef todo fill:#eeeeee,stroke:#999999,color:#000;
+    classDef decision fill:#ffe6a3,stroke:#cc9900,color:#000;
+    class ARCORE,POSE,DEPTH,MAP done;
+    class ML decision;
+    class PLAN,CMD,VIEW,HUMAN,PI,DOG todo;
 ```
+
+**Status colors:** 🟩 green = done · ⬜ gray = not started · 🟨 amber = decision/optional. **(NN)** = uses a neural net.
+
+**Data flow:** Camera+IMU → ARCore → **pose** (localization) and **dense depth**, both fused into the **occupancy/voxel map** → **planning** → **move commands** → FSD view / human (now) or Pi → PiDog motors (later). The dotted ML branch is the optional Phase-4 perception.
+
+**Neural nets — there are only two, and localization + mapping use neither:**
+- **Depth API** *(Phase 1)* — IN: camera frames + device motion (VIO); OUT: per-pixel metric depth + confidence. WHY: the S22 has no LiDAR, so a CNN infers depth from motion parallax. It's the *only* net in core sensing, and it's optional (skip it → sparse map). Localization (VIO) and mapping (geometry) are classical, no NN.
+- **ML Kit / MediaPipe / TFLite** *(Phase 4, optional)* — IN: RGB frames; OUT: object boxes + labels and/or per-pixel masks. WHY: tells the robot *what* things are (finding, interacting, patrolling) — ARCore can't.
 
 ---
 
@@ -82,15 +85,22 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    P0["Phase 0<br/>Sensing validation"]:::done --> P1["Phase 1<br/>Unified ARCore app<br/>pose + depth + map"]:::done
-    P1 --> P2["Phase 2<br/>On-phone test<br/>+ visualize"]:::done
-    P2 --> P3["Phase 3<br/>Planning +<br/>obstacle avoidance"]
-    P3 --> P5["Phase 5<br/>FSD-style nav test<br/>human-in-loop"]
-    P5 --> P6["Phase 6<br/>Deploy to PiDog"]
-    P3 -.-> P4{"Phase 4<br/>Add classification<br/>/ segmentation?"}
+    P0["Phase 0 — Sensing"] --> P1["Phase 1 — Capture app"]
+    P1 --> P2["Phase 2 — On-phone test"]
+    P2 --> P3["Phase 3 — Navigation"]
+    P3 --> P5["Phase 5 — FSD nav test"]
+    P5 --> P6["Phase 6 — PiDog"]
+    P3 -.-> P4["Phase 4 — Classification?"]
     P4 -.-> P5
-    classDef done fill:#bbf,stroke:#27a,color:#000;
+    classDef done fill:#bdf5c8,stroke:#229922,color:#000;
+    classDef todo fill:#eeeeee,stroke:#999999,color:#000;
+    classDef decision fill:#ffe6a3,stroke:#cc9900,color:#000;
+    class P0,P1,P2 done;
+    class P3,P5,P6 todo;
+    class P4 decision;
 ```
+
+Green = done · gray = to-do · amber = decision.
 
 ---
 
