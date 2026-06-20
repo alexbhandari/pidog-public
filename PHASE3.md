@@ -38,13 +38,32 @@ Think of the floor as a grid of cells, each tagged one of three ways as the robo
 6. **Plan the route + start walking.** It computes the step-by-step route over OPEN cells to that point and starts issuing move commands (turn / forward / stop). During the test that's the on-screen banner driving you; on the robot it's the same commands to the motors.
 7. **The edge gets "eaten away."** As it walks toward that spot, the camera keeps filling in cells, so that UNKNOWN region shrinks and new edges appear further out.
 8. **Arrive → re-check → repeat.** When it reaches the spot (or the map has changed a lot), it redoes steps 3–6: where are the edges now, which is the nearest reachable one, go.
-9. **Stop when there's nothing left to see.** Eventually no OPEN-next-to-UNKNOWN edges remain that it can reach — meaning everywhere reachable has been seen. It announces **"exploration complete."** The space is fully mapped.
+9. **Before stopping, look around.** The camera only sees a **forward cone (~65°)**, so "no edges *in front*" does **not** mean done — there may be unmapped space beside or behind it. So when it runs out of edges ahead, it first **turns in place to sweep the camera around** (a look-around scan). Only if a full look-around still finds **no reachable OPEN-next-to-UNKNOWN edge** does it announce **"exploration complete."** This stops it from quitting with unseen space behind it. (It also does a quick scan on *arriving* at each target, to map the newly revealed area before picking the next one.)
 
 *(In one line of jargon for reference: greedy nearest-frontier exploration with A\* path planning. A smarter target-picker later = "prefer big unexplored areas, discount far ones" — but nearest-first is the right v1.)*
 
+## Robot motion model — it is not a free-flying dot
+Two physical facts about the PiDog change the planning; the plan must respect them.
+
+**A. Limited field of view → it must look around** (covered in exploration step 9): the camera sees only a forward cone, so the robot **scans on arrival** and does a **full in-place look-around before declaring "complete."** It never quits just because nothing is in front of it.
+
+**B. Non-holonomic motion — shallow turns, can't spin on the spot.** The dog moves forward with a limited steering angle (a **minimum turning radius**), like a car, not a tank. A plain grid route with 90° corners is **not drivable**. v1 approach:
+- Grid A\* gives a rough route → **smooth it into gentle arcs no tighter than the dog's turning radius**.
+- Commands are **curve-based**, not pivot-based: `FORWARD`, `BEAR LEFT` / `BEAR RIGHT` (gentle turn *while* moving), `STOP`, `BACK UP`.
+- If a spot needs a turn sharper than the radius → insert a maneuver (tightest arc, or back-up-and-reposition — see C).
+- **Calibration (one-time):** measure the dog's **minimum turning radius** and **forward speed**, feed them to the planner/smoother. In the human test I follow the same curve commands the dog will (shallow turns), so planning is exercised under the real constraint.
+- *(Later: a proper kinematic planner — Hybrid A\* / Reeds–Shepp — natively emits drivable paths, including reverse.)*
+
+**C. Backing up — when and how.** The forward-only mover gets stuck in three cases, all handled by a **reverse maneuver**:
+- **Dead-end / too-tight turn** — the only exit needs a turn tighter than the radius.
+- **Blocked ahead with no room to curve around** (after a reactive stop).
+- **Reversing direction** in a narrow space (back-up + arc, like a 3-point turn).
+
+Handling: a *stuck* handler — when no drivable forward path makes progress, issue **`BACK UP`**, but **only over cells already mapped OPEN** (the camera can't see behind, so it reverses only into space it just drove through), then re-orient and replan. Reverse is short and slow; if even backing up opens no route, it abandons that target and picks another.
+
 ## Driving the human tester (= how the app will move the robot)
 The phone's camera is the sensor; during the test **I am the actuator**, and the app conveys movement the same way it will to the motors:
-- **Instruction banner — one command at a time:** large arrow + text — `TURN LEFT ~45°`, `WALK FORWARD`, `STOP`, `PAN PHONE TO SCAN` (fill in depth), `EXPLORATION COMPLETE`. The app watches my live pose and **auto-advances** to the next instruction once I comply.
+- **Instruction banner — one command at a time, curve-based** (matches the dog's shallow turns, not pivots): `FORWARD`, `BEAR LEFT` / `BEAR RIGHT` (gentle turn while walking), `STOP`, `BACK UP`, `SCAN` (sweep to look around), `COMPLETE`. The app watches my live pose and **auto-advances** once I comply — and I make the *same* shallow turns the dog will, so the planning is tested under the real motion constraint.
 - **AR heading arrow** on the live camera pointing toward the next path waypoint — intuitive "go this way."
 - **FSD map view** for context: my pose, the target frontier, the planned path.
 - Everything **logged** (pose, instruction issued, compliance, collisions) for Mac-side analysis. On the robot, the *same* command stream drives the motors instead of the banner.
@@ -60,10 +79,10 @@ The phone's camera is the sensor; during the test **I am the actuator**, and the
 ## Increment breakdown (each = a small, independently-testable APK)
 1. **2D occupancy grid + FSD map view** — voxels → top-down `free/occupied/unknown` + ego pose, live. *Test: walk, watch the grid + pose build.* (Foundation for everything.)
 2. **Continual autosave** — autosave map + trajectory every few seconds while recording.
-3. **Mover interface + reactive STOP** — instruction banner + AR heading arrow to a **manually-tapped goal**, *plus* the always-on live-depth stop (it won't say "forward" if something is within stop-distance). *Test: app guides me to a tapped point; step a box in front → it immediately says STOP.* (Collision safety floor from the very first movement.)
-4. **A\* path planning (with safety inflation)** — plan over `free` cells to the goal, routing around `occupied` cells inflated by the robot's width; drawn on the map + driven via the mover. *Test: path keeps clearance and reaches the goal without clipping corners.*
-5. **Autonomous exploration** — frontier detect → select nearest → plan → drive → repeat until done. *Test: the app walks me around to fully map a room **on its own**.*
-6. **Reactive replan + collision log** — on a reactive stop, write the obstacle into the map, reroute around it (or pick another goal); COLLISION button logs any actual bump. *Test: drop a box mid-path → it stops, then reroutes around it.*
+3. **Mover interface + reactive STOP** — **curve-based** banner (`FORWARD` / `BEAR L` / `BEAR R` / `STOP` / `BACK UP` / `SCAN`) + AR heading arrow to a **manually-tapped goal**, *plus* the always-on live-depth stop. *Test: app guides me with shallow-turn commands; step a box in front → it immediately says STOP.* (Includes a quick one-time **turning-radius + speed calibration**. Collision safety floor from the first movement.)
+4. **A\* path planning (drivable, with safety inflation)** — plan over `free` cells, inflate `occupied` by robot width, then **smooth the route into arcs no tighter than the turning radius**. *Test: path keeps clearance, is followable with shallow turns, reaches the goal without clipping corners.*
+5. **Autonomous exploration (with look-around)** — frontier detect → select nearest → plan → drive → **scan on arrival** → repeat; **full look-around before "complete."** *Test: the app walks me around to fully map a room **on its own**, and doesn't quit with space unseen behind me.*
+6. **Reactive replan + back-up handler + collision log** — on a reactive stop, write the obstacle to the map and reroute; if stuck (dead-end / too-tight turn / no forward escape), issue **`BACK UP`** over already-seen `free` cells, re-orient, replan; COLLISION button logs any actual bump. *Test: box mid-path → stop+reroute; dead-end → backs up and turns around.*
 7. **Go-to mode** — SET WAYPOINT + RETURN (Start / waypoint goal) reusing the same planner + mover. *Test: navigate back to a chosen point.*
 
 → Start with **Increment 1**; exploration (Inc 5) falls out once the grid + mover + planner exist.

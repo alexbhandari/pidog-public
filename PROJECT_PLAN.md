@@ -167,10 +167,10 @@ Confirmed Phase 1 produces correct localization, depth, and map via a closed-loo
 **v1 = single-session** (map + navigate in one run). Free-roam mapping + autosave, then the app plans on the 2D occupancy grid and drives a human "dog" to a goal in an FSD-style view. Built together with a minimal slice of Phase 5 (commands + view) so it's testable.
 - [ ] **Inc 1:** 2D occupancy grid + FSD map view (voxels → top-down free/occupied/unknown + ego pose)
 - [ ] **Inc 2:** continual autosave
-- [ ] **Inc 3:** mover interface + **always-on reactive STOP** (live-depth safety floor)
-- [ ] **Inc 4:** A\* path planning with **safety inflation** (routes around mapped obstacles with clearance)
-- [ ] **Inc 5:** **autonomous (frontier) exploration** — app drives the mover to map the area on its own
-- [ ] **Inc 6:** reactive **replan** (write obstacle to map + reroute) + COLLISION log
+- [ ] **Inc 3:** mover interface (**curve-based** commands for the dog's shallow turns) + **always-on reactive STOP** + turning-radius/speed calibration
+- [ ] **Inc 4:** A\* planning → **drivable arcs** (min turning radius) with **safety inflation**
+- [ ] **Inc 5:** **autonomous (frontier) exploration** with **look-around** (forward-FOV-aware; won't quit with space unseen behind it)
+- [ ] **Inc 6:** reactive **replan + BACK-UP handler** (dead-ends / no forward escape) + COLLISION log
 - [ ] **Inc 7:** go-to mode (SET WAYPOINT + RETURN)
 - [ ] **Deferred (v2):** cross-session **relocalization** — RTAB-Map test done (~30 cm, slow); next test = **Cloud Anchors in our app + a quantitative error harness** (see PHASE3.md). Loop closure confirmed *not* needed (0.22 % drift).
 
