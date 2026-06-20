@@ -12,10 +12,19 @@
 - **2D occupancy grid** — project the 3D voxel map onto the floor plane → `free / occupied / unknown` cells (a robot plans in 2D).
 - **Frontier detector** — find `free` cells bordering `unknown` (the edge of the explored region = candidate places to go map next).
 - **Goal selector** — *explore mode:* auto-pick the best frontier; *go-to mode:* a user goal (return / waypoint).
-- **A\* planner** — shortest path over `free` cells from current pose to the selected goal.
-- **Mover interface** — turns the path into **one move instruction at a time** (banner + AR heading arrow), auto-advanced from live pose. **Same output whether the mover is the human tester or the robot's motors.**
-- **Reactive layer** — live depth in front → detect a *new* obstacle not on the map → stop / replan.
+- **A\* planner** — shortest path over `free` cells to the goal, routing *around* `occupied` cells. Each `occupied` cell is **inflated by the robot's half-width + a margin** so the path keeps clearance (never hugs a wall, leg, or corner).
+- **Mover interface** — turns the path into **one move instruction at a time** (banner + AR heading arrow), auto-advanced from live pose. **Same output whether the mover is the human tester or the robot's motors.** Includes the always-on reactive stop (below).
+- **Reactive safety layer** — every frame, checks the live depth **straight ahead within the robot's width**; anything closer than the stop-distance → **immediate STOP** (overrides the plan), then mark it on the map and replan. This is the real collision-prevention.
 - **FSD-style map view** — top-down render: occupancy grid + ego pose + frontiers + selected goal + planned path + waypoints + current instruction.
+
+## Obstacle avoidance — what actually stops it hitting things
+No single mechanism is enough (the map is never perfect), so it's **three layers**:
+
+1. **Plan around obstacles it already knows.** The map marks `occupied` cells where it has seen an obstacle; the route planner only walks through `free` cells and routes *around* them. Every `occupied` cell is **inflated by the robot's half-width + a margin**, so the chosen path keeps clearance and never plans into or alongside a wall/leg. → avoids *mapped* obstacles by never routing into them.
+2. **Reactive STOP from live depth — the real safety net.** Independent of any plan, **every frame** it looks at the live depth **straight ahead, within its own width, out to a stop-distance (e.g. 0.4 m)**. If anything is closer than that, it **STOPS immediately**, overriding the plan. This is what actually prevents collisions, because it does **not** trust the map: it catches new/moving things (a person, a moved chair), thin things the map missed (chair legs), glass, and any map error. Fast, always-on whenever moving.
+3. **Replan after a stop.** The thing that triggered the stop gets written into the map as `occupied`; the planner computes a fresh route around it. If there's no way around, it drops that goal and picks another.
+
+**In one line:** layer 2 (live-depth stop) is what keeps it from *running into* things; layer 1 keeps it from *planning into* known things; layer 3 lets it carry on after a surprise. The reactive stop is **active from the very first movement** — nothing moves forward toward something within the stop-distance.
 
 ## Autonomous exploration — exactly what happens, from the robot powering on
 
@@ -51,10 +60,10 @@ The phone's camera is the sensor; during the test **I am the actuator**, and the
 ## Increment breakdown (each = a small, independently-testable APK)
 1. **2D occupancy grid + FSD map view** — voxels → top-down `free/occupied/unknown` + ego pose, live. *Test: walk, watch the grid + pose build.* (Foundation for everything.)
 2. **Continual autosave** — autosave map + trajectory every few seconds while recording.
-3. **Mover interface** — instruction banner + AR heading arrow, driven by a **manually-tapped goal** first. *Test: app says turn/walk toward a tapped point; I follow; it auto-advances from my pose.*
-4. **A\* path planning** — plan over `free` cells to the tapped goal, drawn on the map + driven via the mover. *Test: routes around obstacles; I reach the goal.*
-5. **Autonomous exploration** — frontier detect → select nearest → plan → drive → repeat until done. *Test: the app walks me around to fully map a room **on its own**.* ← the capability you flagged.
-6. **Reactive avoidance** — live depth catches a new obstacle → stop/replan, + COLLISION button. *Test: drop a box in the path, see it stop/reroute.*
+3. **Mover interface + reactive STOP** — instruction banner + AR heading arrow to a **manually-tapped goal**, *plus* the always-on live-depth stop (it won't say "forward" if something is within stop-distance). *Test: app guides me to a tapped point; step a box in front → it immediately says STOP.* (Collision safety floor from the very first movement.)
+4. **A\* path planning (with safety inflation)** — plan over `free` cells to the goal, routing around `occupied` cells inflated by the robot's width; drawn on the map + driven via the mover. *Test: path keeps clearance and reaches the goal without clipping corners.*
+5. **Autonomous exploration** — frontier detect → select nearest → plan → drive → repeat until done. *Test: the app walks me around to fully map a room **on its own**.*
+6. **Reactive replan + collision log** — on a reactive stop, write the obstacle into the map, reroute around it (or pick another goal); COLLISION button logs any actual bump. *Test: drop a box mid-path → it stops, then reroutes around it.*
 7. **Go-to mode** — SET WAYPOINT + RETURN (Start / waypoint goal) reusing the same planner + mover. *Test: navigate back to a chosen point.*
 
 → Start with **Increment 1**; exploration (Inc 5) falls out once the grid + mover + planner exist.
