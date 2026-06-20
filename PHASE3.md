@@ -51,7 +51,7 @@ Two physical facts about the PiDog change the planning; the plan must respect th
 - Grid A\* gives a rough route → **smooth it into gentle arcs no tighter than the dog's turning radius**.
 - Commands are **curve-based**, not pivot-based: `FORWARD`, `BEAR LEFT` / `BEAR RIGHT` (gentle turn *while* moving), `STOP`, `BACK UP`.
 - If a spot needs a turn sharper than the radius → insert a maneuver (tightest arc, or back-up-and-reposition — see C).
-- **Calibration (one-time):** measure the dog's **minimum turning radius** and **forward speed**, feed them to the planner/smoother. In the human test I follow the same curve commands the dog will (shallow turns), so planning is exercised under the real constraint.
+- **Calibration:** the turning radius + speeds come from a one-time **on-dog** calibration — see **Motion calibration** below (including the placeholder assumed for the human test).
 - *(Later: a proper kinematic planner — Hybrid A\* / Reeds–Shepp — natively emits drivable paths, including reverse.)*
 
 **C. Backing up — when and how.** The forward-only mover gets stuck in three cases, all handled by a **reverse maneuver**:
@@ -61,12 +61,73 @@ Two physical facts about the PiDog change the planning; the plan must respect th
 
 Handling: a *stuck* handler — when no drivable forward path makes progress, issue **`BACK UP`**, but **only over cells already mapped OPEN** (the camera can't see behind, so it reverses only into space it just drove through), then re-orient and replan. Reverse is short and slow; if even backing up opens no route, it abandons that target and picks another.
 
+## Motion calibration (measure the dog's real motion)
+**What it measures** (the planner needs all of these): forward speed; **min turning radius LEFT *and* RIGHT, measured separately** (they should mirror — same radius, opposite direction — but we measure both to *confirm*; if asymmetric, store per-side); turn rate; **reverse speed**; and whether it can steer while reversing.
+
+**Steps** — each step: issue **one fixed command for a set time T**, read the **ARCore pose before & after** (the on-dog phone is the odometer), repeat ×3 and average:
+1. **Forward speed** — `FORWARD` straight for T → distance ÷ T (m/s).
+2. **Turn radius LEFT** — full-left steer + forward for T → it traces an arc; from Δposition + Δheading, `R_left = arc_length ÷ heading_change(rad)`; also record turn rate (°/s).
+3. **Turn radius RIGHT** — full-right steer + forward for T → `R_right`. (Expect `R_left ≈ R_right`.)
+4. **Reverse speed** — `BACK UP` straight for T → distance ÷ T.
+5. **Reverse steering (optional)** — if it can steer while reversing, repeat 2–3 in reverse → reverse radius; else **reverse = straight-only**.
+
+→ Writes a config: `{forward_speed, reverse_speed, turn_radius_left, turn_radius_right, turn_rate, reverse_steerable}`.
+
+**When it runs:** on the **real dog, at Phase 6** — you can't measure a dog that doesn't exist yet.
+
+**How the human test handles it (the assumption):** the planner reads these params from a **config file**, so the human test fills it with **placeholders** and swapping in calibrated numbers later is a config edit — *no code change*:
+- **Assumed min turning radius `R = 0.6 m`, symmetric (left = right).** *(A guess for a small quadruped's shallow turn — give me a better number if you have one and I'll use it.)*
+- **Reverse = straight-only.**
+- **Forward speed: not needed for the human test** — commands auto-advance from live pose, so they adapt to my walking speed.
+
+During the test I follow curve commands sized to `R = 0.6 m` (the AR arc shows the curve), so the planner is exercised under a dog-like constraint *before* the real numbers exist. Phase 6 then runs the calibration and overwrites the placeholders.
+
 ## Driving the human tester (= how the app will move the robot)
 The phone's camera is the sensor; during the test **I am the actuator**, and the app conveys movement the same way it will to the motors:
 - **Instruction banner — one command at a time, curve-based** (matches the dog's shallow turns, not pivots): `FORWARD`, `BEAR LEFT` / `BEAR RIGHT` (gentle turn while walking), `STOP`, `BACK UP`, `SCAN` (sweep to look around), `COMPLETE`. The app watches my live pose and **auto-advances** once I comply — and I make the *same* shallow turns the dog will, so the planning is tested under the real motion constraint.
 - **AR heading arrow** on the live camera pointing toward the next path waypoint — intuitive "go this way."
 - **FSD map view** for context: my pose, the target frontier, the planned path.
 - Everything **logged** (pose, instruction issued, compliance, collisions) for Mac-side analysis. On the robot, the *same* command stream drives the motors instead of the banner.
+
+### Interface mockup (what I'll be looking at)
+Phone held landscape. Live camera fills the screen; the big banner = the one thing to do *now*; the AR arc on the floor shows the curve to follow; the corner minimap gives context.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ● REC   voxels 12,480   poses 920            mode: EXPLORE     │
+│                                                                │
+│                 ╔════════════════════════╗                     │
+│                 ║   ⤺  BEAR LEFT          ║   ← do this NOW     │
+│                 ║   keep walking, gentle  ║                     │
+│                 ╚════════════════════════╝                     │
+│                                                                │
+│                    ( live camera view )                        │
+│                          ╭╮                                    │
+│                         ╱  ╲   ← AR arc on the floor:           │
+│                        ╱        the path to walk                │
+│   ┌─────────────┐                                              │
+│   │  MINIMAP    │   ▓ wall/blocked   · open   ? unknown        │
+│   │ ▓▓▓▓▓▓▓▓▓   │   ●▸ you (▸ = heading)                       │
+│   │ ·· ●▸· ·?   │   ✕ target frontier   ┄ planned path         │
+│   │ ·· ┄┄ ✕?    │                                              │
+│   │ ▓▓▓· ·?? ?  │                                              │
+│   └─────────────┘                                              │
+│  [EXPLORE] [WAYPOINT] [RETURN] [⚠ COLLISION]        [■ STOP]    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**The banner is the whole UX** — you only ever do what it says. Its full vocabulary:
+
+| Banner | What you (and later the dog) do |
+|---|---|
+| `▲ FORWARD` | walk straight ahead |
+| `⤺ BEAR LEFT` / `⤻ BEAR RIGHT` | gentle turn **while still walking** (shallow, ~0.6 m radius arc — *not* a pivot) |
+| `■ STOP` | stop immediately (also fires on the reactive depth-stop) |
+| `▼ BACK UP` | step backward slowly (only over already-seen floor) |
+| `↻ SCAN` | turn slowly in place to sweep the camera and look around |
+| `✓ COMPLETE` | exploration / arrival done |
+
+It shows **one** banner at a time and **auto-advances** the moment your live pose shows you've complied — so it always reflects the next move, and the AR arc + minimap keep you oriented.
 
 ## UX / buttons
 - Existing: **START/STOP** (record + clean origin), **SAVE**.
