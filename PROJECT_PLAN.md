@@ -160,12 +160,18 @@ Confirmed Phase 1 produces correct localization, depth, and map via a closed-loo
 - [x] Acceptance met: map metric & dense (89k voxels, recognizable furniture/walls); pose stable over the loop (**0.22 % drift**)
 - *Open polish (non-blocking):* outlier filtering on the cloud; per-frame depth dump for any future offline use.
 
-## Phase 3 — Route planning + obstacle avoidance (⬜)
+## Phase 3 — Navigation & obstacle avoidance (⬜, + minimal Phase 5)
 
-- [ ] **Initial run (navigate-while-mapping):** plan/avoid using live depth as the map is built (SLAM-style exploration)
-- [ ] **Revisit (navigate-on-stored-map):** localize into the saved map, navigate easily from it, **refine** it as you go
-- [ ] **Dynamic obstacles:** detect & react to NEW obstacles not in the stored map (replan locally)
-- [ ] **Decision:** does house-scale drift now require real loop closure? If yes → add it / integrate RTAB-Map lib here.
+📄 **Build plan: [PHASE3.md](PHASE3.md)** — v1 scope, new components, the 6-increment breakdown, and the deferred cross-session relocalization test.
+
+**v1 = single-session** (map + navigate in one run). Free-roam mapping + autosave, then the app plans on the 2D occupancy grid and drives a human "dog" to a goal in an FSD-style view. Built together with a minimal slice of Phase 5 (commands + view) so it's testable.
+- [ ] **Inc 1:** 2D occupancy map view (voxels → top-down grid + ego pose)
+- [ ] **Inc 2:** continual autosave
+- [ ] **Inc 3:** waypoints (SET WAYPOINT)
+- [ ] **Inc 4:** A\* path planning (draw only)
+- [ ] **Inc 5:** turn-by-turn guidance (stop/fwd/turn commands)
+- [ ] **Inc 6:** reactive obstacle avoidance + COLLISION log
+- [ ] **Deferred (v2):** cross-session **relocalization** — RTAB-Map test done (~30 cm, slow); next test = **Cloud Anchors in our app + a quantitative error harness** (see PHASE3.md). Loop closure confirmed *not* needed (0.22 % drift).
 
 ## Phase 4 — Object classification & segmentation (⚠️ decision)
 
@@ -195,8 +201,9 @@ Turn it into a navigation app the human operator follows as the "dog."
 ## Open decisions tracker
 - ✅ **P1 (resolved):** own lightweight mapping — built `phone_brain` on plain ARCore; no `librtabmap`.
 - ✅ **P3 loop closure (resolved):** not needed — 0.22 % drift on a 35 m loop is well under threshold.
-- ⚠️ **P3 scope:** single-session navigate-while-mapping vs. cross-session relocalization on a stored map (needs persistent/Cloud Anchors). *Lean: single-session v1.*
-- ⚠️ **P3 + P5 coupling:** build the planner with a minimal FSD-style command view so it's testable.
+- ✅ **P3 scope (resolved):** v1 = single-session navigate-while-mapping. Cross-session relocalization deferred to v2 — test plan in [PHASE3.md](PHASE3.md).
+- ✅ **P3 + P5 coupling (resolved):** build the planner with a minimal FSD-style command view so it's testable (see PHASE3.md increments).
+- ⚠️ **Relocalization backend (open):** Cloud Anchors vs on-device ORB vs RTAB-Map — decide after the Cloud Anchors quantitative test (deferred).
 - ⚠️ **P4:** classification scope + off-the-shelf vs. trained models.
 - **Control location:** phone-brain vs. phone-maps/Pi-plans split (revisit at Phase 6).
 
