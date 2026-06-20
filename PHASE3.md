@@ -116,6 +116,8 @@ Phone held landscape. Live camera fills the screen; the big banner = the one thi
 └──────────────────────────────────────────────────────────────┘
 ```
 
+**Minimap = heading-up, like car GPS / FSD:** your icon stays fixed pointing **up**, and the whole map **rotates around you** so "up on screen" is always "forward in real life." It always shows the **planned route** (`┄`) from you to the target, plus open/blocked/unknown and frontiers. (Toggle to north-up is a later nicety.)
+
 **The banner is the whole UX** — you only ever do what it says. Its full vocabulary:
 
 | Banner | What you (and later the dog) do |
